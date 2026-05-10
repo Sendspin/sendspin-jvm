@@ -1,0 +1,95 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build conformance-client JAR
+        uses: gradle/actions/setup-gradle@v3
+      - run: ./gradlew :conformance-client:jar
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Clone the harness one directory above our repo (matching local dev layout).
+      - name: Clone conformance harness
+        working-directory: ${{ github.workspace }}/..
+        run: git clone https://github.com/Sendspin/conformance.git conformance
+
+      # The harness fixture loader resolves almost_silent.flac from the sendspin-cli repo.
+      - name: Fetch audio fixture from sendspin-cli
+        working-directory: ${{ github.workspace }}/..
+        run: git clone --depth 1 https://github.com/Sendspin/sendspin-cli.git sendspin-cli
+
+      # The aiosendspin server adapter calls _add_repo_to_syspath("aiosendspin") which
+      # requires the repo on disk even though aiosendspin is already installed via pip.
+      - name: Clone aiosendspin
+        working-directory: ${{ github.workspace }}/..
+        run: git clone --depth 1 https://github.com/Sendspin/aiosendspin.git aiosendspin
+
+      - name: Install harness and server adapter
+        working-directory: ${{ github.workspace }}/../conformance
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -e .
+
+      # Smoke-test: verify av can open the fixture and the adapter module imports cleanly.
+      - name: Smoke-test server adapter
+        working-directory: ${{ github.workspace }}/../conformance
+        run: |
+          FIXTURE="${{ github.workspace }}/../sendspin-cli/tests/fixtures/almost_silent.flac"
+          .venv/bin/python - <<PYEOF
+          import sys, av, pathlib
+          f = pathlib.Path("$FIXTURE")
+          assert f.exists() and f.stat().st_size > 0, f"fixture missing or empty: {f}"
+          c = av.open(str(f)); c.close()
+          import conformance.adapters.aiosendspin_server
+          print("smoke test passed")
+          PYEOF
+
+      - name: Run conformance matrix
+        working-directory: ${{ github.workspace }}/../conformance
+        run: |
+          . .venv/bin/activate
+          conformance run \
+            --from aiosendspin \
+            --to sendspin-jvm \
+            --timeout-seconds 30 \
+            --results-dir results | tee /tmp/conformance-out.txt
+          if grep "^failed:" /tmp/conformance-out.txt | grep -qv "does not support"; then
+            exit 1
+          fi
+
+      - name: Generate report
+        if: always()
+        working-directory: ${{ github.workspace }}/../conformance
+        run: |
+          . .venv/bin/activate
+          conformance report --results-dir results || true
+
+      - name: Upload results
+        if: always()
+        run: |
+          RESULTS=$(cd "${{ github.workspace }}/../conformance" && mkdir -p results && cd results && pwd)
+          echo "CONFORMANCE_RESULTS=$RESULTS" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: ${{ env.CONFORMANCE_RESULTS }}/
