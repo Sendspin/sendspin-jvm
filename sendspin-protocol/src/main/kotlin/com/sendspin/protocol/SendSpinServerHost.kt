@@ -58,26 +58,38 @@ class SendSpinServerHost(
     @Volatile private var activeReason: String? = null
     @Volatile private var activeServerId: String? = null
 
-    // Pending connection (waiting for server/hello before we decide)
+    // Pending connection (waiting for server/hello before we decide).
+    // pendingLock guards the check-then-set in onOpen; java-websocket calls onOpen
+    // from per-connection worker threads, so two concurrent connections can otherwise
+    // both see pendingConn == null and both proceed.
+    private val pendingLock = Any()
     @Volatile private var pendingConn: WebSocket? = null
     @Volatile private var pendingConnTimeoutJob: Job? = null
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         Timber.i("SendSpinServerHost: incoming connection from %s", conn.remoteSocketAddress)
-        if (pendingConn != null) {
+        val alreadyPending: Boolean
+        synchronized(pendingLock) {
+            alreadyPending = pendingConn != null
+            if (!alreadyPending) pendingConn = conn
+        }
+        if (alreadyPending) {
             Timber.w("SendSpinServerHost: rejecting connection (handshake already in progress)")
             sendGoodbye(conn, "another_server")
             conn.close(1000, "another_server")
             return
         }
-        pendingConn = conn
         pendingConnTimeoutJob = scope.launch {
             delay(pendingHelloTimeoutMs)
-            if (pendingConn == conn) {
+            val timedOut: Boolean
+            synchronized(pendingLock) {
+                timedOut = pendingConn == conn
+                if (timedOut) pendingConn = null
+            }
+            if (timedOut) {
                 Timber.w("SendSpinServerHost: pending connection timed out, closing")
                 sendGoodbye(conn, "another_server")
                 conn.close(1000, "timeout")
-                pendingConn = null
             }
         }
         try {
@@ -88,7 +100,7 @@ class SendSpinServerHost(
             Timber.w(e, "SendSpinServerHost: failed to send client/hello, dropping pending connection")
             pendingConnTimeoutJob?.cancel()
             pendingConnTimeoutJob = null
-            pendingConn = null
+            synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
             conn.close(1000, "error")
         }
     }
@@ -104,7 +116,7 @@ class SendSpinServerHost(
                     Timber.w("SendSpinServerHost: pending connection sent non-hello message, closing")
                     sendGoodbye(conn, "another_server")
                     conn.close(1000, "another_server")
-                    pendingConn = null
+                    synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
                 }
             }
             conn == activeConn -> client.handleTextMessage(message)
@@ -132,7 +144,7 @@ class SendSpinServerHost(
             pendingConn -> {
                 pendingConnTimeoutJob?.cancel()
                 pendingConnTimeoutJob = null
-                pendingConn = null
+                synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
             }
         }
     }
@@ -144,7 +156,7 @@ class SendSpinServerHost(
             started = false
             pendingConnTimeoutJob?.cancel()
             pendingConnTimeoutJob = null
-            pendingConn = null
+            synchronized(pendingLock) { pendingConn = null }
         }
         if (conn == null || conn == activeConn) {
             activeConn = null
@@ -154,7 +166,7 @@ class SendSpinServerHost(
         } else if (conn == pendingConn) {
             pendingConnTimeoutJob?.cancel()
             pendingConnTimeoutJob = null
-            pendingConn = null
+            synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
         }
     }
 
@@ -213,7 +225,7 @@ class SendSpinServerHost(
                 activeServerId, newHello.name, newReason)
             sendGoodbye(newConn, "another_server")
             newConn.close(1000, "another_server")
-            pendingConn = null
+            synchronized(pendingLock) { if (pendingConn == newConn) pendingConn = null }
         }
     }
 
@@ -221,7 +233,7 @@ class SendSpinServerHost(
         activeConn = conn
         activeReason = hello.connectionReason
         activeServerId = hello.serverId
-        pendingConn = null
+        synchronized(pendingLock) { pendingConn = null }
         Timber.i("SendSpinServerHost: activating server '%s' (id=%s reason=%s)",
             hello.name, hello.serverId, hello.connectionReason)
         client.acceptIncomingConnection(JavaWebSocketAdapter(conn), hello)

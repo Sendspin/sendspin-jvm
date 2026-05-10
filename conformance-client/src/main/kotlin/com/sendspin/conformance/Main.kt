@@ -255,7 +255,7 @@ private fun buildSummary(config: CliConfig, session: SessionResult, moshi: Moshi
 
     return JSONObject().apply {
         put("status", "ok")
-        put("implementation", "sendspin-android-tv")
+        put("implementation", "sendspin-jvm")
         put("role", "client")
         put("client_name", config.clientName)
         put("client_id", config.clientId)
@@ -381,7 +381,7 @@ private fun JSONObject.addArtworkFields(session: SessionResult) {
 
 private fun buildErrorSummary(config: CliConfig, reason: String) = JSONObject().apply {
     put("status", "error")
-    put("implementation", "sendspin-android-tv")
+    put("implementation", "sendspin-jvm")
     put("role", "client")
     put("client_name", config.clientName)
     put("client_id", config.clientId)

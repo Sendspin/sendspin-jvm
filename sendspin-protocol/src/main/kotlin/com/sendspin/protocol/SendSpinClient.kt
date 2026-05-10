@@ -271,6 +271,8 @@ class SendSpinClient(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (webSocket !== activeOkHttpWs) return
+            activeOkHttpWs = null
+            ws = null
             Timber.e(t, "SendSpinClient: WebSocket failure")
             _state.value = ClientState.ERROR
             cleanupJobs()
@@ -287,6 +289,8 @@ class SendSpinClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (webSocket !== activeOkHttpWs) return
+            activeOkHttpWs = null
+            ws = null
             Timber.i("SendSpinClient: closed (%d %s)", code, reason)
             _state.value = ClientState.DISCONNECTED
             cleanupJobs()
