@@ -18,9 +18,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Build conformance-client JAR
-        uses: gradle/actions/setup-gradle@v3
-      - run: ./gradlew :conformance-client:jar
+      - uses: gradle/actions/setup-gradle@v3
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -43,11 +41,28 @@ jobs:
         working-directory: ${{ github.workspace }}/..
         run: git clone --depth 1 https://github.com/Sendspin/aiosendspin.git aiosendspin
 
-      - name: Install harness and server adapter
+      - name: Install harness
         working-directory: ${{ github.workspace }}/../conformance
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -e .
+
+      # Build the conformance-client JAR via the harness build system.
+      # ensure_repo_checkout("sendspin-jvm") resolves this checkout as a sibling repo,
+      # so no manual symlink is needed.
+      - name: Build conformance-client JAR
+        working-directory: ${{ github.workspace }}/../conformance
+        run: |
+          .venv/bin/python - <<'PYEOF'
+          from conformance.build import build_selected_adapters, build_failed
+          import sys
+          results = build_selected_adapters(selected_adapters={"sendspin-jvm-client"})
+          for r in results:
+              print(f"{r['adapter']}: {r['status']}")
+              if r.get("detail"):
+                  print(r["detail"])
+          sys.exit(1 if build_failed(results) else 0)
+          PYEOF
 
       # Smoke-test: verify av can open the fixture and the adapter module imports cleanly.
       - name: Smoke-test server adapter
