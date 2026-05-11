@@ -18,4 +18,3 @@ dependencyResolutionManagement {
 rootProject.name = "sendspin-jvm"
 
 include(":sendspin-protocol")
-include(":conformance-client")
