@@ -175,8 +175,8 @@ data class ControllerState(
     @Json(name = "supported_commands") val supportedCommands: List<String> = emptyList(),
     @Json(name = "volume") val volume: Int = 100,
     @Json(name = "muted") val muted: Boolean = false,
-    @Json(name = "repeat") val repeat: String? = null,
-    @Json(name = "shuffle") val shuffle: Boolean? = null,
+    @Json(name = "repeat") val repeat: JsonOptional<String> = JsonOptional.Absent,
+    @Json(name = "shuffle") val shuffle: JsonOptional<Boolean> = JsonOptional.Absent,
 )
 
 @JsonClass(generateAdapter = true)

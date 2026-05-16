@@ -12,14 +12,14 @@ The SendSpin spec ([PR #81](https://github.com/Sendspin/spec/pull/81)) moves `re
 
 ### 1. `sendspin-protocol/src/main/kotlin/com/sendspin/protocol/Messages.kt`
 
-**`ControllerState`** — add two new nullable fields (nullable, not JsonOptional, consistent with the existing volume/muted pattern):
+**`ControllerState`** — add two new `JsonOptional` fields. Unlike `volume`/`muted` (always present in controller messages), `repeat` and `shuffle` may be absent from old servers that send controller only for volume/muted. The tri-state (`Absent` / `Present(null)` / `Present(value)`) lets the merge logic distinguish "field omitted → fall back to metadata" from "field explicitly cleared → honour the null":
 ```kotlin
 data class ControllerState(
     @Json(name = "supported_commands") val supportedCommands: List<String> = emptyList(),
     @Json(name = "volume") val volume: Int = 100,
     @Json(name = "muted") val muted: Boolean = false,
-    @Json(name = "repeat") val repeat: String? = null,       // ← add
-    @Json(name = "shuffle") val shuffle: Boolean? = null,    // ← add
+    @Json(name = "repeat") val repeat: JsonOptional<String> = JsonOptional.Absent,   // ← add
+    @Json(name = "shuffle") val shuffle: JsonOptional<Boolean> = JsonOptional.Absent, // ← add
 )
 ```
 
@@ -53,27 +53,27 @@ Add private helper (after the `handleTextMessage` function):
 ```kotlin
 private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
     val ctrl = msg.controller
+    val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
+    val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
     return when {
         ctrl != null -> {
-            // New server path: controller is fully authoritative.
-            // Do NOT fall back to metadata — ctrl.repeat == null means the server cleared
-            // the field, and we must not re-populate it from the legacy metadata source.
-            ctrl
+            // Controller is present. Use its value when Present (including Present(null) = clear).
+            // When Absent (old server sending controller only for volume/muted), fall back to
+            // legacy metadata so repeat/shuffle are not silently dropped.
+            val repeat  = if (ctrl.repeat  is JsonOptional.Present) ctrl.repeat  else rawRepeat
+            val shuffle = if (ctrl.shuffle is JsonOptional.Present) ctrl.shuffle else rawShuffle
+            ctrl.copy(repeat = repeat, shuffle = shuffle)
         }
-        else -> {
-            // Old server path: no controller object; apply metadata repeat/shuffle to the
-            // existing controller state. Only update if the field is Present (including
-            // Present(null) = explicit clear). Skip if no prior controller state exists to
-            // avoid inventing volume/muted defaults.
-            val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
-            val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
-            if (rawRepeat !is JsonOptional.Present && rawShuffle !is JsonOptional.Present) return null
+        rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
+            // No controller object. Old server sends repeat/shuffle only via metadata.
+            // Only update an existing controller state to avoid inventing volume/muted defaults.
             val current = _controllerState.value ?: return null
             current.copy(
-                repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat.value  else current.repeat,
-                shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle.value else current.shuffle,
+                repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat  else current.repeat,
+                shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle else current.shuffle,
             )
         }
+        else -> null
     }
 }
 ```
@@ -83,13 +83,14 @@ private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
 `MessageParserTest.kt` — add three cases:
 - **New server**: `server/state` with `controller: { "repeat": "all", "shuffle": true }` → parsed into `ControllerState`
 - **Old server**: `server/state` with only metadata `repeat`/`shuffle` → legacy fields still parse correctly
-- **Controller without repeat/shuffle**: defaults to null
+- **Controller without repeat/shuffle**: defaults to `JsonOptional.Absent`
 
 `ControllerMergeTest.kt` (new file) — verify the `_controllerState` StateFlow via `handleTextMessage`:
-- New server: controller repeat/shuffle used directly
-- Old server with prior controller state: metadata repeat/shuffle update the existing state
-- Old server without prior controller state: metadata repeat/shuffle ignored (no state to update)
-- Both present: controller wins (including null controller values — no metadata fallback)
+- New server: controller repeat/shuffle (`Present`) used directly
+- Old server: controller carries volume/muted only (`Absent` repeat/shuffle) alongside metadata repeat/shuffle → metadata values used
+- Old server with prior controller state, metadata-only message: metadata updates existing state
+- Old server without prior controller state, metadata-only message: ignored (can't invent volume/muted)
+- Both present, controller `Present`: controller wins (including `Present(null)` explicit clear)
 - Old server: `Present(null)` in metadata explicitly clears repeat or shuffle
 - Neither present: controller state unchanged
 

@@ -329,8 +329,8 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals("all", msg.controller?.repeat)
-        assertEquals(true, msg.controller?.shuffle)
+        assertEquals(JsonOptional.Present("all"), msg.controller?.repeat)
+        assertEquals(JsonOptional.Present(true), msg.controller?.shuffle)
         assertEquals(80, msg.controller?.volume)
     }
 
@@ -349,8 +349,8 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertNull(msg.controller?.repeat)
-        assertNull(msg.controller?.shuffle)
+        assertEquals(JsonOptional.Absent, msg.controller?.repeat)
+        assertEquals(JsonOptional.Absent, msg.controller?.shuffle)
     }
 
     @Suppress("DEPRECATION")

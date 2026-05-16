@@ -66,8 +66,28 @@ class ControllerMergeTest {
         """.trimIndent())
 
         val ctrl = client.controllerState.value!!
-        assertEquals("all", ctrl.repeat)
-        assertEquals(true, ctrl.shuffle)
+        assertEquals(JsonOptional.Present("all"), ctrl.repeat)
+        assertEquals(JsonOptional.Present(true), ctrl.shuffle)
+    }
+
+    @Test
+    fun `old server - controller with volume only, metadata supplies repeat and shuffle`() {
+        // Old server sends controller for volume/muted alongside metadata for repeat/shuffle.
+        // Controller repeat/shuffle are Absent, so metadata values should be used.
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 75, "muted": false },
+                "metadata": { "repeat": "one", "shuffle": true }
+              }
+            }
+        """.trimIndent())
+
+        val ctrl = client.controllerState.value!!
+        assertEquals(JsonOptional.Present("one"), ctrl.repeat)
+        assertEquals(JsonOptional.Present(true), ctrl.shuffle)
+        assertEquals(75, ctrl.volume)
     }
 
     @Test
@@ -93,8 +113,8 @@ class ControllerMergeTest {
         """.trimIndent())
 
         val ctrl = client.controllerState.value!!
-        assertEquals("one", ctrl.repeat)
-        assertEquals(false, ctrl.shuffle)
+        assertEquals(JsonOptional.Present("one"), ctrl.repeat)
+        assertEquals(JsonOptional.Present(false), ctrl.shuffle)
         assertEquals(75, ctrl.volume)  // existing volume preserved
     }
 
@@ -125,12 +145,12 @@ class ControllerMergeTest {
             }
         """.trimIndent())
 
-        assertEquals("all", client.controllerState.value!!.repeat)
+        assertEquals(JsonOptional.Present("all"), client.controllerState.value!!.repeat)
     }
 
     @Test
     fun `controller null repeat is not overridden by metadata repeat`() {
-        // Controller is authoritative: null repeat from controller means cleared, not absent.
+        // Controller is authoritative: Present(null) from controller means cleared.
         // Metadata repeat must not re-populate it.
         client.handleTextMessage("""
             {
@@ -142,7 +162,7 @@ class ControllerMergeTest {
             }
         """.trimIndent())
 
-        assertNull(client.controllerState.value!!.repeat)
+        assertEquals(JsonOptional.Present(null), client.controllerState.value!!.repeat)
     }
 
     @Test
@@ -156,7 +176,7 @@ class ControllerMergeTest {
               }
             }
         """.trimIndent())
-        assertEquals("all", client.controllerState.value!!.repeat)
+        assertEquals(JsonOptional.Present("all"), client.controllerState.value!!.repeat)
 
         // Old server sends explicit null to clear repeat
         client.handleTextMessage("""
@@ -168,7 +188,7 @@ class ControllerMergeTest {
             }
         """.trimIndent())
 
-        assertNull(client.controllerState.value!!.repeat)
+        assertEquals(JsonOptional.Present(null), client.controllerState.value!!.repeat)
     }
 
     @Test
@@ -181,7 +201,7 @@ class ControllerMergeTest {
               }
             }
         """.trimIndent())
-        assertEquals(true, client.controllerState.value!!.shuffle)
+        assertEquals(JsonOptional.Present(true), client.controllerState.value!!.shuffle)
 
         client.handleTextMessage("""
             {
@@ -192,7 +212,7 @@ class ControllerMergeTest {
             }
         """.trimIndent())
 
-        assertNull(client.controllerState.value!!.shuffle)
+        assertEquals(JsonOptional.Present(null), client.controllerState.value!!.shuffle)
     }
 
     @Test
