@@ -216,6 +216,35 @@ class ControllerMergeTest {
     }
 
     @Test
+    fun `controller volume-only update preserves previously merged repeat and shuffle`() {
+        // Establish repeat/shuffle via new-server controller message
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 80, "muted": false, "repeat": "all", "shuffle": true }
+              }
+            }
+        """.trimIndent())
+        assertEquals(JsonOptional.Present("all"), client.controllerState.value!!.repeat)
+
+        // Volume-only update: repeat/shuffle absent from both controller and metadata
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 50, "muted": false }
+              }
+            }
+        """.trimIndent())
+
+        val ctrl = client.controllerState.value!!
+        assertEquals(50, ctrl.volume)
+        assertEquals(JsonOptional.Present("all"), ctrl.repeat)   // must be preserved
+        assertEquals(JsonOptional.Present(true), ctrl.shuffle)   // must be preserved
+    }
+
+    @Test
     fun `no repeat or shuffle in either source leaves controller state null`() {
         client.handleTextMessage("""
             {

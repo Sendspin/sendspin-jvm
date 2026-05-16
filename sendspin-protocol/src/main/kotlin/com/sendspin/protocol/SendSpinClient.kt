@@ -418,11 +418,19 @@ class SendSpinClient(
         val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
         return when {
             ctrl != null -> {
-                // Controller is present. If a field is Present (including Present(null) = explicit
-                // clear), use the controller value. If Absent (old server sending controller only
-                // for volume/muted), fall back to legacy metadata so repeat/shuffle are preserved.
-                val repeat  = if (ctrl.repeat  is JsonOptional.Present) ctrl.repeat  else rawRepeat
-                val shuffle = if (ctrl.shuffle is JsonOptional.Present) ctrl.shuffle else rawShuffle
+                // Priority: controller (if Present) > metadata (if Present) > existing stored value.
+                // Absent from both sources means the server did not touch the field — preserve it.
+                val stored  = _controllerState.value
+                val repeat  = when {
+                    ctrl.repeat  is JsonOptional.Present -> ctrl.repeat
+                    rawRepeat    is JsonOptional.Present -> rawRepeat
+                    else -> stored?.repeat ?: JsonOptional.Absent
+                }
+                val shuffle = when {
+                    ctrl.shuffle is JsonOptional.Present -> ctrl.shuffle
+                    rawShuffle   is JsonOptional.Present -> rawShuffle
+                    else -> stored?.shuffle ?: JsonOptional.Absent
+                }
                 ctrl.copy(repeat = repeat, shuffle = shuffle)
             }
             rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {

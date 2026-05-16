@@ -335,7 +335,7 @@ class MessageParserTest {
     }
 
     @Test
-    fun `parse server state controller without repeat and shuffle defaults to null`() {
+    fun `parse server state controller without repeat and shuffle defaults to Absent`() {
         val json = """
             {
               "type": "server/state",
