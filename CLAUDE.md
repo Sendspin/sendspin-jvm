@@ -59,6 +59,10 @@ Moshi with KSP-generated adapters (`@JsonClass(generateAdapter = true)`). `JsonO
 
 CLI program invoked by the Python adapter. Accepts `--initiator-role server|client`, `--scenario-id`, `--preferred-codec flac|opus|pcm`, plus harness coordination flags (`--summary`, `--ready`, `--registry`, `--port`). Uses `SendSpinClient.onAudioChunk` hook to capture all raw encoded bytes before `AudioBuffer` drop logic applies. Writes a JSON summary and exits.
 
+## Plans
+
+Significant changes include a plan document in `plans/`. Each plan is a markdown file named after the feature (e.g., `plans/controller-repeat-shuffle.md`) and is committed alongside the code change. Plans describe the motivation, approach, and key decisions.
+
 ## Publishing
 
 `sendspin-protocol` is published via JitPack. Tag a release (`vX.Y.Z`) and JitPack builds automatically. Consumers add:

@@ -329,8 +329,9 @@ class SendSpinClient(
                 val progress = msg.metadata?.progress
                 if (progress != null) Timber.d("SendSpinClient: server/state progress=%dms speed=%d",
                     progress.trackProgress, progress.playbackSpeed)
-                if (msg.controller != null) {
-                    _controllerState.value = msg.controller
+                val effectiveController = mergeControllerWithMetadata(msg)
+                if (effectiveController != null) {
+                    _controllerState.value = effectiveController
                 }
                 _serverState.tryEmit(msg)
                 if (_state.value == ClientState.CLOCK_SYNCING || _state.value == ClientState.STREAMING) {
@@ -407,6 +408,41 @@ class SendSpinClient(
             is UnknownMessage -> Timber.d("SendSpinClient: unknown message type '%s'", msg.type)
             null -> { /* parse error already logged by MessageParser */ }
             else -> { /* sealed when — exhaustive */ }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
+        val ctrl = msg.controller
+        val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
+        val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
+        return when {
+            ctrl != null -> {
+                // Priority: controller (if Present) > metadata (if Present) > existing stored value.
+                // Absent from both sources means the server did not touch the field — preserve it.
+                val stored  = _controllerState.value
+                val repeat  = when {
+                    ctrl.repeat  is JsonOptional.Present -> ctrl.repeat
+                    rawRepeat    is JsonOptional.Present -> rawRepeat
+                    else -> stored?.repeat ?: JsonOptional.Absent
+                }
+                val shuffle = when {
+                    ctrl.shuffle is JsonOptional.Present -> ctrl.shuffle
+                    rawShuffle   is JsonOptional.Present -> rawShuffle
+                    else -> stored?.shuffle ?: JsonOptional.Absent
+                }
+                ctrl.copy(repeat = repeat, shuffle = shuffle)
+            }
+            rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
+                // No controller object. Old server sends repeat/shuffle only via metadata.
+                // Only update an existing controller state to avoid inventing volume/muted defaults.
+                val current = _controllerState.value ?: return null
+                current.copy(
+                    repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat  else current.repeat,
+                    shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle else current.shuffle,
+                )
+            }
+            else -> null
         }
     }
 
