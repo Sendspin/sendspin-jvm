@@ -57,11 +57,20 @@ private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
     val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
     return when {
         ctrl != null -> {
-            // Controller is present. Use its value when Present (including Present(null) = clear).
-            // When Absent (old server sending controller only for volume/muted), fall back to
-            // legacy metadata so repeat/shuffle are not silently dropped.
-            val repeat  = if (ctrl.repeat  is JsonOptional.Present) ctrl.repeat  else rawRepeat
-            val shuffle = if (ctrl.shuffle is JsonOptional.Present) ctrl.shuffle else rawShuffle
+            // Priority: controller (Present) > metadata (Present) > existing stored value.
+            // Absent from both sources means the server did not touch the field — preserve it
+            // so a volume-only update does not erase a previously merged repeat/shuffle.
+            val stored  = _controllerState.value
+            val repeat  = when {
+                ctrl.repeat  is JsonOptional.Present -> ctrl.repeat
+                rawRepeat    is JsonOptional.Present -> rawRepeat
+                else -> stored?.repeat ?: JsonOptional.Absent
+            }
+            val shuffle = when {
+                ctrl.shuffle is JsonOptional.Present -> ctrl.shuffle
+                rawShuffle   is JsonOptional.Present -> rawShuffle
+                else -> stored?.shuffle ?: JsonOptional.Absent
+            }
             ctrl.copy(repeat = repeat, shuffle = shuffle)
         }
         rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
