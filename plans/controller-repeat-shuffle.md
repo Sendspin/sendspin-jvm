@@ -53,25 +53,27 @@ Add private helper (after the `handleTextMessage` function):
 ```kotlin
 private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
     val ctrl = msg.controller
-    // Extract legacy metadata fields (only present on old servers)
-    val metaRepeat  = (msg.metadata?.repeat  as? JsonOptional.Present)?.value
-    val metaShuffle = (msg.metadata?.shuffle as? JsonOptional.Present)?.value
     return when {
         ctrl != null -> {
-            // New server path: controller is present; metadata values are fallback
-            val repeat  = ctrl.repeat  ?: metaRepeat
-            val shuffle = ctrl.shuffle ?: metaShuffle
-            ctrl.copy(repeat = repeat, shuffle = shuffle)
+            // New server path: controller is fully authoritative.
+            // Do NOT fall back to metadata — ctrl.repeat == null means the server cleared
+            // the field, and we must not re-populate it from the legacy metadata source.
+            ctrl
         }
-        metaRepeat != null || metaShuffle != null -> {
-            // Old server path: no controller object, but metadata carries repeat/shuffle
-            val current = _controllerState.value ?: ControllerState()
+        else -> {
+            // Old server path: no controller object; apply metadata repeat/shuffle to the
+            // existing controller state. Only update if the field is Present (including
+            // Present(null) = explicit clear). Skip if no prior controller state exists to
+            // avoid inventing volume/muted defaults.
+            val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
+            val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
+            if (rawRepeat !is JsonOptional.Present && rawShuffle !is JsonOptional.Present) return null
+            val current = _controllerState.value ?: return null
             current.copy(
-                repeat  = metaRepeat  ?: current.repeat,
-                shuffle = metaShuffle ?: current.shuffle,
+                repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat.value  else current.repeat,
+                shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle.value else current.shuffle,
             )
         }
-        else -> null  // nothing to update
     }
 }
 ```
@@ -85,10 +87,11 @@ private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
 
 `ControllerMergeTest.kt` (new file) — verify the `_controllerState` StateFlow via `handleTextMessage`:
 - New server: controller repeat/shuffle used directly
-- Old server: metadata repeat/shuffle flow into controller state
-- Both present: controller wins
-- Controller present without repeat/shuffle: metadata repeat falls back into it
-- Neither present: controller state stays null
+- Old server with prior controller state: metadata repeat/shuffle update the existing state
+- Old server without prior controller state: metadata repeat/shuffle ignored (no state to update)
+- Both present: controller wins (including null controller values — no metadata fallback)
+- Old server: `Present(null)` in metadata explicitly clears repeat or shuffle
+- Neither present: controller state unchanged
 
 ### 4. Plans directory and CLAUDE.md
 
@@ -96,7 +99,7 @@ Create `plans/` at the repo root and commit this plan alongside the code change.
 
 ### 5. GitHub issue — remove backward compat
 
-Open an issue to track eventual removal of the legacy metadata fallback and the `@Deprecated` fields from `TrackMetadataMsg`. That removal will be the **major** version bump.
+Open an issue to track eventual removal of the legacy metadata fallback and the `@Deprecated` fields from `TrackMetadataMsg`. That removal will be another major version bump.
 
 ### 6. Version tagging
 

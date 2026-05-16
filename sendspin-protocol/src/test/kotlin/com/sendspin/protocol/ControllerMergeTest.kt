@@ -129,18 +129,20 @@ class ControllerMergeTest {
     }
 
     @Test
-    fun `controller without repeat falls back to metadata repeat`() {
+    fun `controller null repeat is not overridden by metadata repeat`() {
+        // Controller is authoritative: null repeat from controller means cleared, not absent.
+        // Metadata repeat must not re-populate it.
         client.handleTextMessage("""
             {
               "type": "server/state",
               "payload": {
-                "controller": { "volume": 100, "muted": false },
+                "controller": { "volume": 100, "muted": false, "repeat": null },
                 "metadata": { "repeat": "one" }
               }
             }
         """.trimIndent())
 
-        assertEquals("one", client.controllerState.value!!.repeat)
+        assertNull(client.controllerState.value!!.repeat)
     }
 
     @Test
@@ -167,6 +169,30 @@ class ControllerMergeTest {
         """.trimIndent())
 
         assertNull(client.controllerState.value!!.repeat)
+    }
+
+    @Test
+    fun `old server - metadata explicit null clears previously set shuffle`() {
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 80, "muted": false, "shuffle": true }
+              }
+            }
+        """.trimIndent())
+        assertEquals(true, client.controllerState.value!!.shuffle)
+
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "metadata": { "shuffle": null }
+              }
+            }
+        """.trimIndent())
+
+        assertNull(client.controllerState.value!!.shuffle)
     }
 
     @Test
