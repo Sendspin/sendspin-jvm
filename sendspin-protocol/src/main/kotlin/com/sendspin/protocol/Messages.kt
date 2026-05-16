@@ -157,7 +157,9 @@ data class TrackMetadataMsg(
     @Json(name = "year") val year: JsonOptional<Int> = JsonOptional.Absent,
     @Json(name = "track") val track: JsonOptional<Int> = JsonOptional.Absent,
     @Json(name = "progress") val progress: ProgressInfo? = null,
+    @Deprecated("Sent by old servers only; use ControllerState.repeat instead")
     @Json(name = "repeat") val repeat: JsonOptional<String> = JsonOptional.Absent,
+    @Deprecated("Sent by old servers only; use ControllerState.shuffle instead")
     @Json(name = "shuffle") val shuffle: JsonOptional<Boolean> = JsonOptional.Absent,
 )
 
@@ -173,6 +175,8 @@ data class ControllerState(
     @Json(name = "supported_commands") val supportedCommands: List<String> = emptyList(),
     @Json(name = "volume") val volume: Int = 100,
     @Json(name = "muted") val muted: Boolean = false,
+    @Json(name = "repeat") val repeat: String? = null,
+    @Json(name = "shuffle") val shuffle: Boolean? = null,
 )
 
 @JsonClass(generateAdapter = true)

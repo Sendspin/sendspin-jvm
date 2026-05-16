@@ -312,6 +312,69 @@ class MessageParserTest {
     }
 
     @Test
+    fun `parse server state controller with repeat and shuffle`() {
+        val json = """
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": {
+                  "supported_commands": ["volume"],
+                  "volume": 80,
+                  "muted": false,
+                  "repeat": "all",
+                  "shuffle": true
+                }
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json) as ServerState
+        assertEquals("all", msg.controller?.repeat)
+        assertEquals(true, msg.controller?.shuffle)
+        assertEquals(80, msg.controller?.volume)
+    }
+
+    @Test
+    fun `parse server state controller without repeat and shuffle defaults to null`() {
+        val json = """
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": {
+                  "volume": 100,
+                  "muted": false
+                }
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json) as ServerState
+        assertNull(msg.controller?.repeat)
+        assertNull(msg.controller?.shuffle)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `parse server state metadata with legacy repeat and shuffle`() {
+        val json = """
+            {
+              "type": "server/state",
+              "payload": {
+                "metadata": {
+                  "title": "Old Server Track",
+                  "repeat": "one",
+                  "shuffle": false
+                }
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json) as ServerState
+        assertEquals(JsonOptional.Present("one"), msg.metadata?.repeat)
+        assertEquals(JsonOptional.Present(false), msg.metadata?.shuffle)
+    }
+
+    @Test
     fun `parse stream end with versioned role names`() {
         val msg = parser.parseText(
             """{"type":"stream/end","payload":{"roles":["player@v1","metadata@v1"]}}"""

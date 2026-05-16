@@ -329,8 +329,9 @@ class SendSpinClient(
                 val progress = msg.metadata?.progress
                 if (progress != null) Timber.d("SendSpinClient: server/state progress=%dms speed=%d",
                     progress.trackProgress, progress.playbackSpeed)
-                if (msg.controller != null) {
-                    _controllerState.value = msg.controller
+                val effectiveController = mergeControllerWithMetadata(msg)
+                if (effectiveController != null) {
+                    _controllerState.value = effectiveController
                 }
                 _serverState.tryEmit(msg)
                 if (_state.value == ClientState.CLOCK_SYNCING || _state.value == ClientState.STREAMING) {
@@ -407,6 +408,28 @@ class SendSpinClient(
             is UnknownMessage -> Timber.d("SendSpinClient: unknown message type '%s'", msg.type)
             null -> { /* parse error already logged by MessageParser */ }
             else -> { /* sealed when — exhaustive */ }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
+        val ctrl = msg.controller
+        val metaRepeat  = (msg.metadata?.repeat  as? JsonOptional.Present)?.value
+        val metaShuffle = (msg.metadata?.shuffle as? JsonOptional.Present)?.value
+        return when {
+            ctrl != null -> {
+                val repeat  = ctrl.repeat  ?: metaRepeat
+                val shuffle = ctrl.shuffle ?: metaShuffle
+                ctrl.copy(repeat = repeat, shuffle = shuffle)
+            }
+            metaRepeat != null || metaShuffle != null -> {
+                val current = _controllerState.value ?: ControllerState()
+                current.copy(
+                    repeat  = metaRepeat  ?: current.repeat,
+                    shuffle = metaShuffle ?: current.shuffle,
+                )
+            }
+            else -> null
         }
     }
 
