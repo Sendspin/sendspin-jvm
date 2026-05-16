@@ -6,7 +6,7 @@ The SendSpin spec ([PR #81](https://github.com/Sendspin/spec/pull/81)) moves `re
 - Support new servers by parsing repeat/shuffle from `ControllerState`
 - Stay backward-compatible with old servers that still send them in `TrackMetadataMsg`
 - When both are present, prefer the controller values
-- Bump the library version — this PR is a **minor** bump (additive: new fields, deprecated but not removed old fields). The **major** bump comes when the deprecated metadata fields are removed (tracked in issue #3).
+- Bump the library version — this PR is a **major** bump (v2.0.0). Adding constructor parameters to a Kotlin `data class` changes the JVM binary signature of `copy`, `copy$default`, and `componentN`, which is binary-incompatible even though the source API is backward compatible. The deprecated-but-not-removed metadata fields are a separate concern tracked in issue #3.
 
 ## Changes
 
@@ -100,7 +100,7 @@ Open an issue to track eventual removal of the legacy metadata fallback and the 
 
 ### 6. Version tagging
 
-Tag this release as **v1.1.0** (minor bump — additive change, no API removals). Tag the follow-up removal as **v2.0.0**.
+Tag this release as **v2.0.0**. Adding constructor parameters to a `data class` changes the JVM binary ABI (`copy`, `copy$default`, `componentN` signatures), which is binary-incompatible regardless of source compatibility. The follow-up removal of deprecated metadata fields will be a further major bump.
 
 ## Critical files
 - `sendspin-protocol/src/main/kotlin/com/sendspin/protocol/Messages.kt` — data classes

@@ -71,7 +71,18 @@ class ControllerMergeTest {
     }
 
     @Test
-    fun `old server - repeat and shuffle from metadata fall back into controller state`() {
+    fun `old server - metadata repeat and shuffle update existing controller state`() {
+        // Establish controller state first (old server sends controller at connection time)
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 75, "muted": false }
+              }
+            }
+        """.trimIndent())
+
+        // Then update repeat/shuffle via legacy metadata path
         client.handleTextMessage("""
             {
               "type": "server/state",
@@ -84,6 +95,22 @@ class ControllerMergeTest {
         val ctrl = client.controllerState.value!!
         assertEquals("one", ctrl.repeat)
         assertEquals(false, ctrl.shuffle)
+        assertEquals(75, ctrl.volume)  // existing volume preserved
+    }
+
+    @Test
+    fun `old server - metadata repeat without prior controller state is ignored`() {
+        // No controller state has been received yet; metadata-only cannot invent volume/muted
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "metadata": { "repeat": "all", "shuffle": true }
+              }
+            }
+        """.trimIndent())
+
+        assertNull(client.controllerState.value)
     }
 
     @Test
@@ -114,6 +141,32 @@ class ControllerMergeTest {
         """.trimIndent())
 
         assertEquals("one", client.controllerState.value!!.repeat)
+    }
+
+    @Test
+    fun `old server - metadata explicit null clears previously set repeat`() {
+        // Establish a controller state with repeat set
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 80, "muted": false, "repeat": "all" }
+              }
+            }
+        """.trimIndent())
+        assertEquals("all", client.controllerState.value!!.repeat)
+
+        // Old server sends explicit null to clear repeat
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "metadata": { "repeat": null }
+              }
+            }
+        """.trimIndent())
+
+        assertNull(client.controllerState.value!!.repeat)
     }
 
     @Test

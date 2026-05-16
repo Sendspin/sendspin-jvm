@@ -414,19 +414,23 @@ class SendSpinClient(
     @Suppress("DEPRECATION")
     private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
         val ctrl = msg.controller
-        val metaRepeat  = (msg.metadata?.repeat  as? JsonOptional.Present)?.value
-        val metaShuffle = (msg.metadata?.shuffle as? JsonOptional.Present)?.value
+        val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
+        val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
         return when {
             ctrl != null -> {
-                val repeat  = ctrl.repeat  ?: metaRepeat
-                val shuffle = ctrl.shuffle ?: metaShuffle
+                // New server path: controller is present; fall back to metadata for absent fields.
+                // Use the raw JsonOptional so Present(null) (clear) is honoured.
+                val repeat  = ctrl.repeat  ?: (rawRepeat  as? JsonOptional.Present)?.value
+                val shuffle = ctrl.shuffle ?: (rawShuffle as? JsonOptional.Present)?.value
                 ctrl.copy(repeat = repeat, shuffle = shuffle)
             }
-            metaRepeat != null || metaShuffle != null -> {
-                val current = _controllerState.value ?: ControllerState()
+            rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
+                // Old server path: metadata carries repeat/shuffle, no controller object.
+                // Only update an existing controller state to avoid inventing volume/muted defaults.
+                val current = _controllerState.value ?: return null
                 current.copy(
-                    repeat  = metaRepeat  ?: current.repeat,
-                    shuffle = metaShuffle ?: current.shuffle,
+                    repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat.value  else current.repeat,
+                    shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle.value else current.shuffle,
                 )
             }
             else -> null
