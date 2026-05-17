@@ -123,11 +123,12 @@ class AudioBuffer(
     )
 
     companion object {
-        // After a seek or stream/end+stream/start, the server sends a burst of pre-buffered
-        // audio chunks whose timestamps may be up to ~3 seconds in the past (observed: 3131 ms).
-        // A 500 ms threshold drops them all, causing the audio to start ~3 s past the seek target.
-        // 5 s is still well above any genuine network-delay scenario (which peaks at ~200 ms).
-        const val DROP_THRESHOLD_MICROS = 5_000_000L  // 5 s
+        // Genuine network delay peaks at ~200 ms; 1 s gives a 5× margin.
+        // Seeks cause a brief underrun while Music Assistant's pre-buffered burst (timestamps
+        // up to ~3 s in the past) is dropped; the audio player recovers when valid chunks
+        // arrive. Can drop to ~500 ms once Music Assistant adopts aiosendspin PR #237's
+        // keep_stream=True + stream/clear, eliminating the stale burst (see CLAUDE.md).
+        const val DROP_THRESHOLD_MICROS = 1_000_000L  // 1 s
 
         /** Chunks scheduled further ahead than this are dropped — prevents the buffer
          *  from filling with a server pre-send burst that the player can't yet consume. */

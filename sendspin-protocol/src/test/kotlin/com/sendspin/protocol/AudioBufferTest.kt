@@ -57,10 +57,10 @@ class AudioBufferTest {
     // ── Late chunk dropping ───────────────────────────────────────────────────
 
     @Test
-    fun `chunks older than 5s are dropped on offer`() {
+    fun `chunks older than 1s are dropped on offer`() {
         val now = System.nanoTime() / 1_000L
-        // 5.1 s in the past → should be dropped
-        buffer.offer(chunk(now - 5_100_000))
+        // 1.1 s in the past → should be dropped
+        buffer.offer(chunk(now - 1_100_000))
 
         assertEquals(0, buffer.size)
         assertEquals(1L, buffer.droppedChunks)
@@ -70,11 +70,12 @@ class AudioBufferTest {
     @Test
     fun `chunks exactly at drop threshold are NOT dropped`() {
         val now = System.nanoTime() / 1_000L
-        // 4.9 s in the past → within threshold (5 s)
+        // 900 ms in the past → within threshold (1 s)
         every { clockSync.toLocalMicros(any()) } answers { firstArg<Long>() }
-        buffer.offer(chunk(now - 4_900_000))
+        buffer.offer(chunk(now - 900_000))
         assertEquals(1, buffer.size)
     }
+
 
     // ── Capacity ──────────────────────────────────────────────────────────────
 
