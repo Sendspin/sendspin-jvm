@@ -384,6 +384,7 @@ class SendSpinClient(
             is StreamEnd -> {
                 val roles = msg.roles
                 val endPlayer = roles == null || roles.any { it == "player@v1" || it == "player" }
+                val endArtwork = roles == null || roles.any { it == "artwork@v1" || it == "artwork" }
                 Timber.d("SendSpinClient: stream/end roles=%s", roles)
                 if (endPlayer) {
                     _streamFormat.value = null
@@ -392,13 +393,18 @@ class SendSpinClient(
                         pendingStopJob?.cancel()
                         // Don't flush here — transition() and configure() flush when the next
                         // stream/start arrives. Flushing now empties the buffer immediately,
-                        // causing underrun warnings and silence during the handoff window.
+                        // causing underrun warnings during track handoffs.
                         pendingStopJob = audioScope.launch {
                             delay(SEEK_HANDOFF_MS)
                             pendingStopJob = null
                             audioPlayer.stop()
                         }
                     }
+                }
+                if (endArtwork) {
+                    _streamArtwork.value = null
+                    _albumArtwork.value = null
+                    _artistArtwork.value = null
                 }
             }
             is GroupUpdate -> {
@@ -637,6 +643,12 @@ class SendSpinClient(
     companion object {
         private const val RECONNECT_BASE_MS = 1_000L
         private const val RECONNECT_MAX_MS  = 30_000L
+        // Natural track-to-track transitions: aiosendspin sends stream/end then stream/start
+        // for the next song. If stream/start arrives within this window, the pending stop is
+        // cancelled and transition() handles the handoff gaplessly.
+        // Seeks/jumps now use stream/clear instead (aiosendspin PR #237) and no longer go
+        // through this path. Can be removed once aiosendspin adopts spec-compliant track
+        // transitions that don't emit stream/end (see CLAUDE.md "Future simplifications").
         private const val SEEK_HANDOFF_MS   = 500L
     }
 }

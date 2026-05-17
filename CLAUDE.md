@@ -45,7 +45,7 @@ NTP four-timestamp round-trip model fed into a 2D Kalman filter tracking offset 
 
 ### Audio buffer (`AudioBuffer`)
 
-Priority queue ordered by local scheduled play time. Chunks more than 5 s late are dropped; chunks more than 30 s ahead are also dropped. On buffer full, the chunk scheduled furthest in the future is evicted (preserves near-term continuity). `staticDelayMicros` shifts all scheduled times for receiver-side delay compensation.
+Priority queue ordered by local scheduled play time. Chunks more than 1 s late are dropped; chunks more than 30 s ahead are also dropped. On buffer full, the chunk scheduled furthest in the future is evicted (preserves near-term continuity). `staticDelayMicros` shifts all scheduled times for receiver-side delay compensation.
 
 ### Platform interfaces
 
@@ -62,6 +62,16 @@ CLI program invoked by the Python adapter. Accepts `--initiator-role server|clie
 ## Plans
 
 Significant changes include a plan document in `plans/`. Each plan is a markdown file named after the feature (e.g., `plans/controller-repeat-shuffle.md`) and is committed alongside the code change. Plans describe the motivation, approach, and key decisions.
+
+## Future simplifications
+
+These workarounds exist because aiosendspin does not yet follow the spec in these areas. Remove them once the server catches up:
+
+1. **`SEEK_HANDOFF_MS` in `SendSpinClient`**: The 500 ms window between `stream/end` and `audioPlayer.stop()` exists because aiosendspin sends `stream/end` + `stream/start` for natural track transitions. Spec-compliant behaviour would be gapless by timestamps with no stream boundary messages; once aiosendspin drops those messages for track transitions, this window (and the `pendingStopJob` logic) can be removed.
+
+2. **`DROP_THRESHOLD_MICROS = 1 s` in `AudioBuffer`**: After a seek, Music Assistant pre-buffers audio with timestamps up to ~3 s in the past. Those chunks are dropped, causing a brief underrun; the audio player recovers when valid chunks arrive. Once Music Assistant adopts aiosendspin PR #237's `keep_stream=True` + `stream/clear` for seeks the stale burst no longer occurs and this can drop to ~500 ms.
+
+3. **Safety-net `audioBuffer.flush()` in `SyncedAudioPlayer.transition()` (sendspin-android-tv)**: Music Assistant (via aiosendspin) does not yet reliably emit `stream/clear` before every `stream/start` on a song change. The spec says `stream/start` should not clear buffers; once `stream/clear` emission is reliable the flush becomes unconditional dead code.
 
 ## Publishing
 
