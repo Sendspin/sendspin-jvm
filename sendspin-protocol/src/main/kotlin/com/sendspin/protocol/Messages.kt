@@ -23,6 +23,7 @@ data class ClientHelloPayload(
     @Json(name = "metadata@v1_support") val metadataSupport: MetadataSupport? = null,
     @Json(name = "artwork@v1_support") val artworkSupport: ArtworkSupport? = null,
     @Json(name = "controller@v1_support") val controllerSupport: ControllerSupport? = null,
+    @Json(name = "color@v1_support")      val colorSupport:      ColorSupport?      = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -53,6 +54,10 @@ class MetadataSupport
 /** Empty capabilities object — controller@v1 requires no additional fields. Serialises to {}. */
 @JsonClass(generateAdapter = false)
 class ControllerSupport
+
+/** Empty capabilities object — color@v1 requires no additional fields. Serialises to {}. */
+@JsonClass(generateAdapter = false)
+class ColorSupport
 
 @JsonClass(generateAdapter = true)
 data class ArtworkSupport(
@@ -142,8 +147,9 @@ data class ServerHello(
 
 @JsonClass(generateAdapter = true)
 data class ServerState(
-    @Json(name = "metadata") val metadata: TrackMetadataMsg? = null,
-    @Json(name = "controller") val controller: ControllerState? = null,
+    @Json(name = "metadata")   val metadata:   TrackMetadataMsg? = null,
+    @Json(name = "controller") val controller: ControllerState?  = null,
+    @Json(name = "color")      val color:      ColorState?       = null,
 ) : IncomingMessage
 
 @JsonClass(generateAdapter = true)
@@ -177,6 +183,17 @@ data class ControllerState(
     @Json(name = "muted") val muted: Boolean = false,
     @Json(name = "repeat") val repeat: JsonOptional<String> = JsonOptional.Absent,
     @Json(name = "shuffle") val shuffle: JsonOptional<Boolean> = JsonOptional.Absent,
+)
+
+@JsonClass(generateAdapter = true)
+data class ColorState(
+    @Json(name = "timestamp")        val timestamp:       Long       = 0,
+    @Json(name = "background_dark")  val backgroundDark:  List<Int>? = null,
+    @Json(name = "background_light") val backgroundLight: List<Int>? = null,
+    @Json(name = "primary")          val primary:         List<Int>? = null,
+    @Json(name = "accent")           val accent:          List<Int>? = null,
+    @Json(name = "on_dark")          val onDark:          List<Int>? = null,
+    @Json(name = "on_light")         val onLight:         List<Int>? = null,
 )
 
 @JsonClass(generateAdapter = true)

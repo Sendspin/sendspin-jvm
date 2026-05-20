@@ -135,6 +135,9 @@ class SendSpinClient(
     private val _controllerState = MutableStateFlow<ControllerState?>(null)
     val controllerState: StateFlow<ControllerState?> = _controllerState
 
+    private val _colorState = MutableStateFlow<ColorState?>(null)
+    val colorState: StateFlow<ColorState?> = _colorState
+
     @Volatile private var staticDelayMs: Int = 0
 
     fun setStaticDelayMs(delayMs: Int) {
@@ -333,6 +336,7 @@ class SendSpinClient(
                 if (effectiveController != null) {
                     _controllerState.value = effectiveController
                 }
+                if (msg.color != null) _colorState.value = msg.color
                 _serverState.tryEmit(msg)
                 if (_state.value == ClientState.CLOCK_SYNCING || _state.value == ClientState.STREAMING) {
                     _state.value = ClientState.STREAMING
@@ -406,6 +410,8 @@ class SendSpinClient(
                     _albumArtwork.value = null
                     _artistArtwork.value = null
                 }
+                val endColor = roles == null || roles.any { it == "color@v1" || it == "color" }
+                if (endColor) _colorState.value = null
             }
             is GroupUpdate -> {
                 Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
@@ -496,11 +502,12 @@ class SendSpinClient(
             clientId = clientId,
             name = clientName,
             deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
-            supportedRoles = listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1"),
+            supportedRoles = listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
             playerSupport = PlayerSupport(supportedFormats = preferences.supportedFormats),
             metadataSupport = MetadataSupport(),
             artworkSupport = ArtworkSupport(channels = preferences.artworkChannels),
             controllerSupport = ControllerSupport(),
+            colorSupport = ColorSupport(),
         )
     )
 
@@ -618,6 +625,7 @@ class SendSpinClient(
         lastConnectionReason = null
         _groupPlaybackState.value = null
         _controllerState.value = null
+        _colorState.value = null
         _streamFormat.value = null
         _streamArtwork.value = null
         _albumArtwork.value = null

@@ -312,6 +312,63 @@ class MessageParserTest {
     }
 
     @Test
+    fun `parse server state with color`() {
+        val json = """
+            {
+              "type": "server/state",
+              "payload": {
+                "color": {
+                  "timestamp": 5000000,
+                  "background_dark":  [10, 20, 30],
+                  "background_light": [200, 210, 220],
+                  "primary":          [255, 0, 0],
+                  "accent":           [0, 255, 0],
+                  "on_dark":          [240, 240, 240],
+                  "on_light":         [20, 20, 20]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json) as ServerState
+        val color = msg.color
+        assertNotNull(color)
+        assertEquals(5_000_000L, color!!.timestamp)
+        assertEquals(listOf(10, 20, 30), color.backgroundDark)
+        assertEquals(listOf(200, 210, 220), color.backgroundLight)
+        assertEquals(listOf(255, 0, 0), color.primary)
+        assertEquals(listOf(0, 255, 0), color.accent)
+        assertEquals(listOf(240, 240, 240), color.onDark)
+        assertEquals(listOf(20, 20, 20), color.onLight)
+    }
+
+    @Test
+    fun `parse server state color with null fields`() {
+        val json = """
+            {
+              "type": "server/state",
+              "payload": {
+                "color": {
+                  "timestamp": 1000,
+                  "primary": [128, 64, 32]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json) as ServerState
+        val color = msg.color
+        assertNotNull(color)
+        assertEquals(1000L, color!!.timestamp)
+        assertEquals(listOf(128, 64, 32), color.primary)
+        assertNull(color.backgroundDark)
+        assertNull(color.backgroundLight)
+        assertNull(color.accent)
+        assertNull(color.onDark)
+        assertNull(color.onLight)
+    }
+
+    @Test
     fun `parse server state controller with repeat and shuffle`() {
         val json = """
             {

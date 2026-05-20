@@ -124,6 +124,28 @@ class SendSpinClientHelloTest {
     }
 
     @Test
+    fun `buildClientHelloJson advertises color@v1 in supported_roles`() {
+        val json = buildClient().buildClientHelloJson()
+        val payload = parseHello(json).payload
+        assertTrue("color@v1 missing from supported_roles", payload.supportedRoles.contains("color@v1"))
+        assertTrue("color@v1_support missing from hello payload", json.contains(""""color@v1_support""""))
+        assertNotNull("color@v1_support deserialized as null", payload.colorSupport)
+    }
+
+    @Test
+    fun `stream-end with color@v1 role clears colorState`() {
+        val client = buildClient()
+        client.handleTextMessage(
+            """{"type":"server/state","payload":{"color":{"timestamp":1000,"primary":[255,0,0]}}}"""
+        )
+        assertNotNull("colorState should be set after server/state with color", client.colorState.value)
+        client.handleTextMessage(
+            """{"type":"stream/end","payload":{"roles":["color@v1"]}}"""
+        )
+        assertNull("colorState should be null after stream/end with color@v1", client.colorState.value)
+    }
+
+    @Test
     fun `buildClientHelloJson advertises exactly FLAC, Opus, PCM at 48kHz 16-bit in that order`() {
         val json = buildClient().buildClientHelloJson()
 
