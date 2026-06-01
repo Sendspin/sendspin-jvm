@@ -480,6 +480,122 @@ class MessageParserTest {
         assertEquals(0, result.chunk.data.size)
     }
 
+    // ── Visualizer binary messages ────────────────────────────────────────────
+
+    @Test
+    fun `parse visualizer loudness`() {
+        val ts = 500_000L
+        val payload = byteArrayOf(0x80.toByte(), 0x00.toByte()) // 32768
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_LOUDNESS, ts, payload))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Loudness
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(32768, frame.value)
+    }
+
+    @Test
+    fun `visualizer loudness too short returns null`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_LOUDNESS, 0L, byteArrayOf(0x01)))
+        assertNull(result)
+    }
+
+    @Test
+    fun `parse visualizer beat without downbeat`() {
+        val ts = 1_000_000L
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_BEAT, ts, byteArrayOf(0x00)))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Beat
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(false, frame.isDownbeat)
+    }
+
+    @Test
+    fun `parse visualizer beat with downbeat`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_BEAT, 0L, byteArrayOf(0x01)))
+            as MessageParser.BinaryVisualizer
+        assertEquals(true, (result.frame as VisualizerFrame.Beat).isDownbeat)
+    }
+
+    @Test
+    fun `visualizer beat too short returns null`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_BEAT, 0L, byteArrayOf()))
+        assertNull(result)
+    }
+
+    @Test
+    fun `parse visualizer f_peak`() {
+        val ts = 2_000_000L
+        val payload = byteArrayOf(0x04, 0x40.toByte(), 0xFF.toByte(), 0xFF.toByte()) // freq=1088, amp=65535
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_F_PEAK, ts, payload))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.FPeak
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(0x0440, frame.freqHz)
+        assertEquals(65535, frame.amplitude)
+    }
+
+    @Test
+    fun `visualizer f_peak too short returns null`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_F_PEAK, 0L, byteArrayOf(0x01, 0x02)))
+        assertNull(result)
+    }
+
+    @Test
+    fun `parse visualizer spectrum`() {
+        val ts = 3_000_000L
+        val payload = byteArrayOf(0x00, 0x01, 0xFF.toByte(), 0xFF.toByte()) // bins: [1, 65535]
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_SPECTRUM, ts, payload))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Spectrum
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(2, frame.bins.size)
+        assertEquals(1.toShort(), frame.bins[0])
+        assertEquals((-1).toShort(), frame.bins[1]) // 0xFFFF as short
+    }
+
+    @Test
+    fun `parse visualizer spectrum with empty payload`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_SPECTRUM, 0L, byteArrayOf()))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Spectrum
+        assertEquals(0, frame.bins.size)
+    }
+
+    @Test
+    fun `parse visualizer peak`() {
+        val ts = 4_000_000L
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_PEAK, ts, byteArrayOf(0xAB.toByte())))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Peak
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(0xAB, frame.strength)
+    }
+
+    @Test
+    fun `visualizer peak too short returns null`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_PEAK, 0L, byteArrayOf()))
+        assertNull(result)
+    }
+
+    @Test
+    fun `parse visualizer pitch`() {
+        val ts = 5_000_000L
+        // midi = 0x4580 (MIDI 69.5 ≈ A4+half), confidence = 200
+        val payload = byteArrayOf(0x45, 0x80.toByte(), 0xC8.toByte())
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_PITCH, ts, payload))
+            as MessageParser.BinaryVisualizer
+        val frame = result.frame as VisualizerFrame.Pitch
+        assertEquals(ts, frame.serverTimestampMicros)
+        assertEquals(0x4580, frame.midiFixed88)
+        assertEquals(200, frame.confidence)
+    }
+
+    @Test
+    fun `visualizer pitch too short returns null`() {
+        val result = parser.parseBinary(buildBinaryFrame(BINARY_TYPE_VISUALIZER_PITCH, 0L, byteArrayOf(0x45, 0x80.toByte())))
+        assertNull(result)
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun buildBinaryFrame(type: Byte, timestamp: Long, payload: ByteArray): ByteString {
