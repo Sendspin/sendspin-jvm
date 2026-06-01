@@ -312,6 +312,25 @@ class MessageParserTest {
     }
 
     @Test
+    fun `serialize client state includes timing fields`() {
+        val moshi = Moshi.Builder().add(JsonOptionalAdapterFactory()).addLast(KotlinJsonAdapterFactory()).build()
+        val adapter = moshi.adapter(ClientStateMsg::class.java)
+        val msg = ClientStateMsg(
+            payload = ClientStateMsgPayload(
+                player = PlayerStatePayload(
+                    staticDelayMs = 100,
+                    requiredLeadTimeMs = 250,
+                    minBufferMs = 500,
+                )
+            )
+        )
+        val json = adapter.toJson(msg)
+        assertTrue(json.contains(""""static_delay_ms":100"""))
+        assertTrue(json.contains(""""required_lead_time_ms":250"""))
+        assertTrue(json.contains(""""min_buffer_ms":500"""))
+    }
+
+    @Test
     fun `parse server state with color`() {
         val json = """
             {
