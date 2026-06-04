@@ -46,6 +46,7 @@ class SendSpinClientHelloTest {
         manufacturer: String = "Acme",
         productName: String = "SmartTV-9000",
         softwareVersion: String = "14",
+        macAddress: String? = null,
         preferences: ClientPreferences = defaultPreferences,
     ) = SendSpinClient(
         okHttpClient = OkHttpClient.Builder().build(),
@@ -56,6 +57,7 @@ class SendSpinClientHelloTest {
         manufacturer = manufacturer,
         productName = productName,
         softwareVersion = softwareVersion,
+        macAddress = macAddress,
         audioPlayerFactory = noOpPlayerFactory,
     )
 
@@ -143,6 +145,18 @@ class SendSpinClientHelloTest {
             """{"type":"stream/end","payload":{"roles":["color@v1"]}}"""
         )
         assertNull("colorState should be null after stream/end with color@v1", client.colorState.value)
+    }
+
+    @Test
+    fun `buildClientHelloJson includes mac_address when provided`() {
+        val json = buildClient(macAddress = "AA:BB:CC:DD:EE:FF").buildClientHelloJson()
+        assertEquals("AA:BB:CC:DD:EE:FF", parseHello(json).payload.macAddress)
+    }
+
+    @Test
+    fun `buildClientHelloJson omits mac_address when not provided`() {
+        val json = buildClient().buildClientHelloJson()
+        assertNull(parseHello(json).payload.macAddress)
     }
 
     @Test

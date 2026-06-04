@@ -73,6 +73,7 @@ class SendSpinClient(
     private val manufacturer: String,
     private val productName: String,
     private val softwareVersion: String,
+    private val macAddress: String? = null,
     audioPlayerFactory: (AudioBuffer, ClockSync) -> AudioPlayer,
     /** Set to false to prevent automatic reconnection on disconnect (e.g. in conformance tests). */
     private val reconnectEnabled: Boolean = true,
@@ -535,6 +536,7 @@ class SendSpinClient(
                 clientId = clientId,
                 name = clientName,
                 deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
+                macAddress = macAddress,
                 supportedRoles = roles,
                 playerSupport = PlayerSupport(supportedFormats = preferences.supportedFormats),
                 metadataSupport = MetadataSupport(),

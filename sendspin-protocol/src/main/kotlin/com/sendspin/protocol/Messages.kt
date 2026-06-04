@@ -17,6 +17,7 @@ data class ClientHelloPayload(
     @Json(name = "client_id") val clientId: String,
     @Json(name = "name") val name: String,
     @Json(name = "device_info") val deviceInfo: DeviceInfo? = null,
+    @Json(name = "mac_address") val macAddress: String? = null,
     @Json(name = "version") val version: Int = 1,
     @Json(name = "supported_roles") val supportedRoles: List<String>,
     @Json(name = "player@v1_support") val playerSupport: PlayerSupport? = null,
