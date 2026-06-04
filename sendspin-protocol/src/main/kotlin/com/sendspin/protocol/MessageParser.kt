@@ -3,6 +3,7 @@ package com.sendspin.protocol
 import com.squareup.moshi.Moshi
 import okio.ByteString
 import org.json.JSONObject
+import java.nio.ByteBuffer
 import com.sendspin.protocol.ProtocolLog as Timber
 
 /**
@@ -58,6 +59,7 @@ class MessageParser(moshi: Moshi) {
     sealed interface BinaryMessage
     data class BinaryAudio(val chunk: AudioChunk) : BinaryMessage
     data class BinaryArtwork(val channel: Int, val serverTimestampMicros: Long, val data: ByteArray) : BinaryMessage
+    data class BinaryVisualizer(val frame: VisualizerFrame) : BinaryMessage
 
     fun parseBinary(bytes: ByteString): BinaryMessage? {
         if (bytes.size < 9) {
@@ -74,10 +76,60 @@ class MessageParser(moshi: Moshi) {
             BINARY_TYPE_ARTWORK_1 -> BinaryArtwork(1, timestamp, payload)
             BINARY_TYPE_ARTWORK_2 -> BinaryArtwork(2, timestamp, payload)
             BINARY_TYPE_ARTWORK_3 -> BinaryArtwork(3, timestamp, payload)
+            BINARY_TYPE_VISUALIZER_LOUDNESS -> parseVisualizerLoudness(timestamp, payload)
+            BINARY_TYPE_VISUALIZER_BEAT     -> parseVisualizerBeat(timestamp, payload)
+            BINARY_TYPE_VISUALIZER_F_PEAK   -> parseVisualizerFPeak(timestamp, payload)
+            BINARY_TYPE_VISUALIZER_SPECTRUM -> parseVisualizerSpectrum(timestamp, payload)
+            BINARY_TYPE_VISUALIZER_PEAK     -> parseVisualizerPeak(timestamp, payload)
+            BINARY_TYPE_VISUALIZER_PITCH    -> parseVisualizerPitch(timestamp, payload)
             else -> {
                 Timber.v("MessageParser: unknown binary type 0x%02x", msgType)
                 null
             }
         }
+    }
+
+    private fun parseVisualizerLoudness(ts: Long, payload: ByteArray): BinaryMessage? {
+        if (payload.size < 2) return malformed("loudness", payload.size, 2)
+        val value = ByteBuffer.wrap(payload).short.toInt() and 0xFFFF
+        return BinaryVisualizer(VisualizerFrame.Loudness(ts, value))
+    }
+
+    private fun parseVisualizerBeat(ts: Long, payload: ByteArray): BinaryMessage? {
+        if (payload.isEmpty()) return malformed("beat", 0, 1)
+        return BinaryVisualizer(VisualizerFrame.Beat(ts, isDownbeat = (payload[0].toInt() and 0x01) != 0))
+    }
+
+    private fun parseVisualizerFPeak(ts: Long, payload: ByteArray): BinaryMessage? {
+        if (payload.size < 4) return malformed("f_peak", payload.size, 4)
+        val buf = ByteBuffer.wrap(payload)
+        val freq = buf.short.toInt() and 0xFFFF
+        val amp  = buf.short.toInt() and 0xFFFF
+        return BinaryVisualizer(VisualizerFrame.FPeak(ts, freq, amp))
+    }
+
+    private fun parseVisualizerSpectrum(ts: Long, payload: ByteArray): BinaryMessage? {
+        val n = payload.size / 2
+        val buf = ByteBuffer.wrap(payload)
+        val bins = ShortArray(n) { buf.short }
+        return BinaryVisualizer(VisualizerFrame.Spectrum(ts, bins))
+    }
+
+    private fun parseVisualizerPeak(ts: Long, payload: ByteArray): BinaryMessage? {
+        if (payload.isEmpty()) return malformed("peak", 0, 1)
+        return BinaryVisualizer(VisualizerFrame.Peak(ts, strength = payload[0].toInt() and 0xFF))
+    }
+
+    private fun parseVisualizerPitch(ts: Long, payload: ByteArray): BinaryMessage? {
+        if (payload.size < 3) return malformed("pitch", payload.size, 3)
+        val buf = ByteBuffer.wrap(payload)
+        val midi       = buf.short.toInt() and 0xFFFF
+        val confidence = buf.get().toInt() and 0xFF
+        return BinaryVisualizer(VisualizerFrame.Pitch(ts, midi, confidence))
+    }
+
+    private fun malformed(type: String, actual: Int, required: Int): BinaryMessage? {
+        Timber.w("MessageParser: visualizer/%s too short (%d bytes, need %d)", type, actual, required)
+        return null
     }
 }

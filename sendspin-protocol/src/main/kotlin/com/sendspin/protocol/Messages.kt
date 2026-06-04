@@ -25,6 +25,7 @@ data class ClientHelloPayload(
     @Json(name = "artwork@v1_support") val artworkSupport: ArtworkSupport? = null,
     @Json(name = "controller@v1_support") val controllerSupport: ControllerSupport? = null,
     @Json(name = "color@v1_support")      val colorSupport:      ColorSupport?      = null,
+    @Json(name = "visualizer@v1_support") val visualizerSupport: VisualizerSupport? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -61,6 +62,22 @@ class ControllerSupport
 class ColorSupport
 
 @JsonClass(generateAdapter = true)
+data class VisualizerSupport(
+    @Json(name = "types") val types: List<String>,
+    @Json(name = "buffer_capacity") val bufferCapacity: Int,
+    @Json(name = "rate_max") val rateMax: Int,
+    @Json(name = "spectrum") val spectrum: VisualizerSpectrumConfig? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class VisualizerSpectrumConfig(
+    @Json(name = "n_disp_bins") val nDispBins: Int,
+    @Json(name = "scale") val scale: String,
+    @Json(name = "f_min") val fMin: Int,
+    @Json(name = "f_max") val fMax: Int,
+)
+
+@JsonClass(generateAdapter = true)
 data class ArtworkSupport(
     @Json(name = "channels") val channels: List<ArtworkChannel>,
 )
@@ -78,6 +95,8 @@ data class PlayerStatePayload(
     @Json(name = "volume") val volume: Int? = null,
     @Json(name = "muted") val muted: Boolean? = null,
     @Json(name = "static_delay_ms") val staticDelayMs: Int = 0,
+    @Json(name = "required_lead_time_ms") val requiredLeadTimeMs: Int = 0,
+    @Json(name = "min_buffer_ms") val minBufferMs: Int = 0,
 )
 
 @JsonClass(generateAdapter = true)
@@ -206,10 +225,19 @@ data class ServerTime(
 ) : IncomingMessage
 
 @JsonClass(generateAdapter = true)
+data class StreamVisualizerConfig(
+    @Json(name = "types") val types: List<String>,
+    @Json(name = "rate_max") val rateMax: Int,
+    @Json(name = "tracks_downbeats") val tracksDownbeats: Boolean = false,
+    @Json(name = "spectrum") val spectrum: VisualizerSpectrumConfig? = null,
+)
+
+@JsonClass(generateAdapter = true)
 data class StreamStart(
     /** Present when an audio stream is active; null when only artwork is being configured. */
     @Json(name = "player") val player: StreamFormat? = null,
     @Json(name = "artwork") val artwork: StreamArtworkConfig? = null,
+    @Json(name = "visualizer") val visualizer: StreamVisualizerConfig? = null,
 ) : IncomingMessage
 
 @JsonClass(generateAdapter = true)
@@ -270,6 +298,37 @@ const val BINARY_TYPE_ARTWORK_0: Byte = 0x08
 const val BINARY_TYPE_ARTWORK_1: Byte = 0x09
 const val BINARY_TYPE_ARTWORK_2: Byte = 0x0A
 const val BINARY_TYPE_ARTWORK_3: Byte = 0x0B
+const val BINARY_TYPE_VISUALIZER_LOUDNESS: Byte = 0x10
+const val BINARY_TYPE_VISUALIZER_BEAT:     Byte = 0x11
+const val BINARY_TYPE_VISUALIZER_F_PEAK:   Byte = 0x12
+const val BINARY_TYPE_VISUALIZER_SPECTRUM: Byte = 0x13
+const val BINARY_TYPE_VISUALIZER_PEAK:     Byte = 0x14
+const val BINARY_TYPE_VISUALIZER_PITCH:    Byte = 0x15
+
+/** A single visualizer analysis frame from the server, carrying a server-clock timestamp. */
+sealed interface VisualizerFrame {
+    val serverTimestampMicros: Long
+
+    /** Overall A-weighted loudness. [value] is 0–65535 (−60 dB → 0, 0 dB → 65535). */
+    data class Loudness(override val serverTimestampMicros: Long, val value: Int) : VisualizerFrame
+    /** Musical beat event. [isDownbeat] is true on bar starts when the server tracks downbeats. */
+    data class Beat(override val serverTimestampMicros: Long, val isDownbeat: Boolean) : VisualizerFrame
+    /** Dominant FFT bin. [freqHz] 0 = no peak; [amplitude] 0–65535. */
+    data class FPeak(override val serverTimestampMicros: Long, val freqHz: Int, val amplitude: Int) : VisualizerFrame
+    /** Per-display-bin magnitudes, 0–65535 each, low to high frequency. */
+    data class Spectrum(override val serverTimestampMicros: Long, val bins: ShortArray) : VisualizerFrame {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Spectrum) return false
+            return serverTimestampMicros == other.serverTimestampMicros && bins.contentEquals(other.bins)
+        }
+        override fun hashCode(): Int = 31 * serverTimestampMicros.hashCode() + bins.contentHashCode()
+    }
+    /** Energy onset event (any transient). [strength] 0–255. */
+    data class Peak(override val serverTimestampMicros: Long, val strength: Int) : VisualizerFrame
+    /** Perceived pitch. [midiFixed88] is an 8.8 fixed-point MIDI note; [confidence] 0–255. */
+    data class Pitch(override val serverTimestampMicros: Long, val midiFixed88: Int, val confidence: Int) : VisualizerFrame
+}
 
 /** A decoded audio chunk ready for scheduling. */
 data class AudioChunk(

@@ -60,6 +60,7 @@ data class DiagnosticsSnapshot(
 data class ClientPreferences(
     val supportedFormats: List<AudioFormat>,
     val artworkChannels: List<ArtworkChannel>,
+    val visualizerSupport: VisualizerSupport? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -139,7 +140,12 @@ class SendSpinClient(
     private val _colorState = MutableStateFlow<ColorState?>(null)
     val colorState: StateFlow<ColorState?> = _colorState
 
+    private val _visualizerStreamConfig = MutableStateFlow<StreamVisualizerConfig?>(null)
+    val visualizerStreamConfig: StateFlow<StreamVisualizerConfig?> = _visualizerStreamConfig
+
     @Volatile private var staticDelayMs: Int = 0
+    @Volatile private var requiredLeadTimeMs: Int = 0
+    @Volatile private var minBufferMs: Int = 0
 
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
@@ -149,6 +155,16 @@ class SendSpinClient(
         // only to newly arriving chunks. The transition resolves within one server buffer window
         // (~2 s). A full flush on delay change would cause a noticeable gap, so we accept the
         // gradual crossover.
+    }
+
+    fun setRequiredLeadTimeMs(ms: Int) {
+        requiredLeadTimeMs = ms.coerceAtLeast(0)
+        sendClientState()
+    }
+
+    fun setMinBufferMs(ms: Int) {
+        minBufferMs = ms.coerceAtLeast(0)
+        sendClientState()
     }
 
     private val _albumArtwork = MutableStateFlow<ByteArray?>(null)
@@ -360,6 +376,7 @@ class SendSpinClient(
             is StreamStart -> {
                 if (msg.player != null) _streamFormat.value = msg.player
                 if (msg.artwork != null) _streamArtwork.value = msg.artwork
+                if (msg.visualizer != null) _visualizerStreamConfig.value = msg.visualizer
                 val artworkChannels = msg.artwork?.channels ?: emptyList()
                 Timber.d("SendSpinClient: stream/start artwork channels=%d", artworkChannels.size)
                 artworkChannels.forEachIndexed { i, ch ->
@@ -413,6 +430,8 @@ class SendSpinClient(
                 }
                 val endColor = roles == null || roles.any { it == "color@v1" || it == "color" }
                 if (endColor) _colorState.value = null
+                val endVisualizer = roles == null || roles.any { it == "visualizer@v1" || it == "visualizer" }
+                if (endVisualizer) _visualizerStreamConfig.value = null
             }
             is GroupUpdate -> {
                 Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
@@ -466,6 +485,12 @@ class SendSpinClient(
      */
     var onAudioChunk: ((AudioChunk) -> Unit)? = null
 
+    /**
+     * Optional hook called for every received visualizer frame. The frame carries a server-clock
+     * timestamp; use [toLocalMicros] to convert it for display scheduling.
+     */
+    var onVisualizerFrame: ((VisualizerFrame) -> Unit)? = null
+
     private var firstAudioChunkLogged = false
 
     internal fun handleBinaryMessage(bytes: ByteString) {
@@ -478,6 +503,9 @@ class SendSpinClient(
                         msg.chunk.serverTimestampMicros, msg.chunk.data.size, audioBuffer.size)
                 }
                 audioBuffer.offer(msg.chunk)
+            }
+            is MessageParser.BinaryVisualizer -> {
+                onVisualizerFrame?.invoke(msg.frame)
             }
             is MessageParser.BinaryArtwork -> {
                 val data = if (msg.data.isEmpty()) null else msg.data
@@ -498,20 +526,27 @@ class SendSpinClient(
 
     // ── Hello ─────────────────────────────────────────────────────────────────
 
-    private fun buildClientHello() = ClientHello(
-        payload = ClientHelloPayload(
-            clientId = clientId,
-            name = clientName,
-            deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
-            macAddress = macAddress,
-            supportedRoles = listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
-            playerSupport = PlayerSupport(supportedFormats = preferences.supportedFormats),
-            metadataSupport = MetadataSupport(),
-            artworkSupport = ArtworkSupport(channels = preferences.artworkChannels),
-            controllerSupport = ControllerSupport(),
-            colorSupport = ColorSupport(),
+    private fun buildClientHello(): ClientHello {
+        val roles = buildList {
+            add("player@v1"); add("metadata@v1"); add("artwork@v1"); add("controller@v1"); add("color@v1")
+            if (preferences.visualizerSupport != null) add("visualizer@v1")
+        }
+        return ClientHello(
+            payload = ClientHelloPayload(
+                clientId = clientId,
+                name = clientName,
+                deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
+                macAddress = macAddress,
+                supportedRoles = roles,
+                playerSupport = PlayerSupport(supportedFormats = preferences.supportedFormats),
+                metadataSupport = MetadataSupport(),
+                artworkSupport = ArtworkSupport(channels = preferences.artworkChannels),
+                controllerSupport = ControllerSupport(),
+                colorSupport = ColorSupport(),
+                visualizerSupport = preferences.visualizerSupport,
+            )
         )
-    )
+    }
 
     private fun sendHello(socket: SendSpinWebSocket) {
         val json = clientHelloAdapter.toJson(buildClientHello())
@@ -563,6 +598,8 @@ class SendSpinClient(
             volume = controller?.volume,
             muted = controller?.muted,
             staticDelayMs = staticDelayMs,
+            requiredLeadTimeMs = requiredLeadTimeMs,
+            minBufferMs = minBufferMs,
         )
         ws?.send(clientStateMsgAdapter.toJson(ClientStateMsg(payload = ClientStateMsgPayload(player = player))))
     }
@@ -628,6 +665,7 @@ class SendSpinClient(
         _groupPlaybackState.value = null
         _controllerState.value = null
         _colorState.value = null
+        _visualizerStreamConfig.value = null
         _streamFormat.value = null
         _streamArtwork.value = null
         _albumArtwork.value = null

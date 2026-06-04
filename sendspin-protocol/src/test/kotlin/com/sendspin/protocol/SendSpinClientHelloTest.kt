@@ -160,6 +160,49 @@ class SendSpinClientHelloTest {
     }
 
     @Test
+    fun `buildClientHelloJson advertises visualizer@v1 when visualizerSupport is set`() {
+        val support = VisualizerSupport(
+            types = listOf("loudness", "beat"),
+            bufferCapacity = 65536,
+            rateMax = 60,
+        )
+        val json = buildClient(
+            preferences = defaultPreferences.copy(visualizerSupport = support),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+        assertTrue("visualizer@v1 missing from supported_roles", payload.supportedRoles.contains("visualizer@v1"))
+        assertNotNull("visualizer@v1_support missing", payload.visualizerSupport)
+        assertEquals(listOf("loudness", "beat"), payload.visualizerSupport!!.types)
+        assertEquals(65536, payload.visualizerSupport.bufferCapacity)
+        assertEquals(60, payload.visualizerSupport.rateMax)
+    }
+
+    @Test
+    fun `buildClientHelloJson omits visualizer@v1 when visualizerSupport is null`() {
+        val json = buildClient().buildClientHelloJson()
+        val payload = parseHello(json).payload
+        assertTrue("visualizer@v1 should not be in supported_roles", !payload.supportedRoles.contains("visualizer@v1"))
+        assertNull("visualizer@v1_support should be absent", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `stream-end with visualizer@v1 role clears visualizerStreamConfig`() {
+        val client = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60)
+            )
+        )
+        client.handleTextMessage(
+            """{"type":"stream/start","payload":{"visualizer":{"types":["loudness"],"rate_max":60}}}"""
+        )
+        assertNotNull("visualizerStreamConfig should be set after stream/start", client.visualizerStreamConfig.value)
+        client.handleTextMessage(
+            """{"type":"stream/end","payload":{"roles":["visualizer@v1"]}}"""
+        )
+        assertNull("visualizerStreamConfig should be null after stream/end with visualizer@v1", client.visualizerStreamConfig.value)
+    }
+
+    @Test
     fun `buildClientHelloJson advertises exactly FLAC, Opus, PCM at 48kHz 16-bit in that order`() {
         val json = buildClient().buildClientHelloJson()
 
