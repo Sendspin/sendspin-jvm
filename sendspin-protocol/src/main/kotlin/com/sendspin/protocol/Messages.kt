@@ -77,6 +77,8 @@ data class PlayerStatePayload(
     @Json(name = "volume") val volume: Int? = null,
     @Json(name = "muted") val muted: Boolean? = null,
     @Json(name = "static_delay_ms") val staticDelayMs: Int = 0,
+    @Json(name = "required_lead_time_ms") val requiredLeadTimeMs: Int = 0,
+    @Json(name = "min_buffer_ms") val minBufferMs: Int = 0,
 )
 
 @JsonClass(generateAdapter = true)

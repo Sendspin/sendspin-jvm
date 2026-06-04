@@ -139,6 +139,8 @@ class SendSpinClient(
     val colorState: StateFlow<ColorState?> = _colorState
 
     @Volatile private var staticDelayMs: Int = 0
+    @Volatile private var requiredLeadTimeMs: Int = 0
+    @Volatile private var minBufferMs: Int = 0
 
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
@@ -148,6 +150,16 @@ class SendSpinClient(
         // only to newly arriving chunks. The transition resolves within one server buffer window
         // (~2 s). A full flush on delay change would cause a noticeable gap, so we accept the
         // gradual crossover.
+    }
+
+    fun setRequiredLeadTimeMs(ms: Int) {
+        requiredLeadTimeMs = ms.coerceAtLeast(0)
+        sendClientState()
+    }
+
+    fun setMinBufferMs(ms: Int) {
+        minBufferMs = ms.coerceAtLeast(0)
+        sendClientState()
     }
 
     private val _albumArtwork = MutableStateFlow<ByteArray?>(null)
@@ -561,6 +573,8 @@ class SendSpinClient(
             volume = controller?.volume,
             muted = controller?.muted,
             staticDelayMs = staticDelayMs,
+            requiredLeadTimeMs = requiredLeadTimeMs,
+            minBufferMs = minBufferMs,
         )
         ws?.send(clientStateMsgAdapter.toJson(ClientStateMsg(payload = ClientStateMsgPayload(player = player))))
     }
