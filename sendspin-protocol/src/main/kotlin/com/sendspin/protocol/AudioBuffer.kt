@@ -18,10 +18,11 @@ class AudioBuffer(
 ) {
     private val lock = Any()
 
-    // Ordered by local playback timestamp (ascending)
-    private val queue = PriorityQueue<ScheduledChunk>(
+    // Ordered by server timestamp (ascending) — local playback time is computed live at poll
+    // time from the current ClockSync estimate, never baked in (see scheduledMicros).
+    private val queue = PriorityQueue<QueuedChunk>(
         capacity,
-        compareBy { it.localPlayTimeMicros },
+        compareBy { it.chunk.serverTimestampMicros },
     )
 
     // ── Static delay ──────────────────────────────────────────────────────────
@@ -45,8 +46,10 @@ class AudioBuffer(
      */
     fun offer(chunk: AudioChunk) {
         val now = ClockSync.localMicros()
+        // Used only to evaluate admission policy (late / far-future / eviction) against the
+        // estimate at arrival time. The schedule itself is recomputed live at poll time so that
+        // later corrections to the ClockSync estimate are reflected for already-queued chunks.
         val rawLocalTime = clockSync.toLocalMicros(chunk.serverTimestampMicros, now)
-        val localTime = rawLocalTime - staticDelayMicros
 
         if (rawLocalTime < now - DROP_THRESHOLD_MICROS) {
             lateChunks++
@@ -66,15 +69,21 @@ class AudioBuffer(
                 // Evict the chunk scheduled furthest in the future — it is the least urgent.
                 // Evicting the soonest-to-play chunk (the default PriorityQueue.poll() order)
                 // would create an immediate gap; evicting the newest preserves playback continuity.
-                val toEvict = queue.maxByOrNull { it.localPlayTimeMicros }
+                // Server timestamp order is equivalent to local-time order for this purpose since
+                // toLocalMicros is monotonic in server time for a fixed offset/drift snapshot.
+                val toEvict = queue.maxByOrNull { it.chunk.serverTimestampMicros }
                 queue.remove(toEvict)
                 droppedChunks++
                 Timber.w("AudioBuffer: evicted newest chunk (buffer full)")
             }
-            queue.offer(ScheduledChunk(localTime, chunk))
+            queue.offer(QueuedChunk(chunk))
             _underrunState.value = false
         }
     }
+
+    /** Computes the chunk's current scheduled local playback time from the live [clockSync] estimate. */
+    private fun scheduledMicros(chunk: AudioChunk, nowMicros: Long): Long =
+        clockSync.toLocalMicros(chunk.serverTimestampMicros, nowMicros) - staticDelayMicros
 
     // ── Read path ─────────────────────────────────────────────────────────────
 
@@ -85,7 +94,7 @@ class AudioBuffer(
     fun poll(nowMicros: Long = ClockSync.localMicros()): AudioChunk? {
         synchronized(lock) {
             val head = queue.peek() ?: return null
-            if (head.localPlayTimeMicros > nowMicros) return null
+            if (scheduledMicros(head.chunk, nowMicros) > nowMicros) return null
             return queue.poll()?.chunk
         }
     }
@@ -97,7 +106,7 @@ class AudioBuffer(
     fun nextChunkDelayMicros(nowMicros: Long = ClockSync.localMicros()): Long? {
         synchronized(lock) {
             val head = queue.peek() ?: return null
-            return (head.localPlayTimeMicros - nowMicros).coerceAtLeast(0L)
+            return (scheduledMicros(head.chunk, nowMicros) - nowMicros).coerceAtLeast(0L)
         }
     }
 
@@ -117,8 +126,7 @@ class AudioBuffer(
         }
     }
 
-    private data class ScheduledChunk(
-        val localPlayTimeMicros: Long,
+    private data class QueuedChunk(
         val chunk: AudioChunk,
     )
 

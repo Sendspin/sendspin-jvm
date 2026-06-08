@@ -94,6 +94,12 @@ class SendSpinClient(
     // moved us to STREAMING before the first ServerTime arrived. Reset on each new connection.
     private var firstMeasurementCompleted = false
 
+    // Buffers replies within the current burst so the lowest-RTT sample can be selected
+    // (burst-then-best, see ClockSyncConfig.PROBES_PER_BURST). Now safe to do now that
+    // AudioBuffer recomputes chunk schedules live from the current ClockSync estimate
+    // instead of baking them in at arrival time (issue #10 step 1).
+    private val burstReplies = mutableListOf<Pair<ServerTime, Long>>()
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val audioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
     @Volatile private var ws: SendSpinWebSocket? = null
@@ -361,7 +367,14 @@ class SendSpinClient(
             }
             is ServerTime -> {
                 val t4 = ClockSync.localMicros()
-                clockSync.processMeasurement(msg.clientTime, msg.serverReceive, msg.serverSend, t4)
+                burstReplies.add(msg to t4)
+                if (burstReplies.size >= ClockSyncConfig.PROBES_PER_BURST) {
+                    val (best, bestT4) = burstReplies.minByOrNull { (m, replyT4) ->
+                        ClockSync.rttMicros(m.clientTime, m.serverReceive, m.serverSend, replyT4)
+                    }!!
+                    burstReplies.clear()
+                    clockSync.processMeasurement(best.clientTime, best.serverReceive, best.serverSend, bestT4)
+                }
                 if (!firstMeasurementCompleted) {
                     firstMeasurementCompleted = true
                     // Flush chunks that arrived with offset=0 before the first estimate was ready.
@@ -672,6 +685,7 @@ class SendSpinClient(
         _artistArtwork.value = null
         firstAudioChunkLogged = false
         firstMeasurementCompleted = false
+        burstReplies.clear()
     }
 
     private fun cleanupJobs() {
