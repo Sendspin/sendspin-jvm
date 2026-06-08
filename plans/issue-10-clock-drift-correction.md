@@ -108,7 +108,7 @@ done from this environment; please test on-device before merging. Cadence/drift-
 tuning (mentioned as an open question) was left as-is since it's an orthogonal concern from the
 sampling-strategy change requested here.
 
-## Step 3: In-SDK sample insert/drop
+## Step 3: In-SDK sample insert/drop — DONE
 
 Implement active drift correction at the playback layer — inserting or dropping samples (or
 light time-stretching) to continuously correct small accumulated drift in real time, rather than
@@ -133,6 +133,34 @@ right integration point depends on what step 2 reveals about correction frequenc
 needed in practice.
 
 **Verify**: unit tests for the new correction stage plus manual/real-device playback testing.
+
+**Result**: Added `PcmDriftCorrector` (sendspin-protocol/src/main/kotlin/com/sendspin/protocol/PcmDriftCorrector.kt),
+a shared utility embedders feed decoded interleaved 16-bit PCM blocks through alongside a live
+drift signal (`scheduledLocalMicros - actualPlaybackPositionMicros`, both derived from the current
+`ClockSync` estimate). It gently resamples via linear interpolation — inserting samples to slow
+down when ahead of schedule, dropping them to speed up when behind — capped at `maxCorrectionPpm`
+(default ±2000 ppm / ±0.2%, well below audible pitch-change thresholds), with a carried-over
+fractional `phase` so correction stays continuous across block boundaries (no clicks at seams).
+`reset()` clears state on flush/seek/transition.
+
+This resolved the open design questions from the plan as follows:
+- **Where it lives**: in `sendspin-protocol` as a standalone, stream-rate-agnostic utility (not
+  baked into `AudioPlayer`), since actual PCM only exists post-decode in each embedder — the
+  library can't manipulate samples itself, but can provide the correction primitive so every
+  embedder doesn't reimplement it.
+- **Correction signal**: continuous comparison of the live `ClockSync`-derived schedule against
+  actual playback position, recomputed per block — consistent with how step 1 made `AudioBuffer`
+  treat the clock estimate as always-current rather than baked in.
+- **Avoiding artifacts**: linear interpolation (not raw duplication/truncation) plus a hard ppm
+  cap and continuous phase tracking keep any single correction inaudible and seamless.
+
+Added `PcmDriftCorrectorTest` covering passthrough at zero drift, sample dropping/inserting in
+each drift direction, ppm clamping, stereo channel alignment, cross-block phase continuity, reset,
+and degenerate short-block input. `:sendspin-protocol:test` passes in full.
+
+**Embedder integration (e.g. android-tv `SyncedAudioPlayer`) is a separate follow-up** — it's
+outside this repo and requires wiring `PcmDriftCorrector` into the decode→output path, which in
+turn needs on-device tuning/listening tests this environment can't perform.
 
 ## Wrap-up
 
