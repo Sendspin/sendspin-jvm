@@ -75,7 +75,7 @@ class ClockSync {
      * @param t4 client receive time (local µs)
      */
     fun processMeasurement(t1: Long, t2: Long, t3: Long, t4: Long) {
-        val rtt = (t4 - t1) - (t3 - t2)
+        val rtt = rttMicros(t1, t2, t3, t4)
         val offsetEstimate = ((t2 - t1) + (t3 - t4)) / 2.0
         // Measurement variance: (rtt/2 × max_error_scale)^2
         val scaledError = rtt * maxErrorScale / 2.0
@@ -164,6 +164,16 @@ class ClockSync {
 
     companion object {
         fun localMicros(): Long = System.nanoTime() / 1_000L
+
+        /**
+         * Round-trip time (µs) for an NTP-style four-timestamp probe:
+         * `(t4 - t1) - (t3 - t2)`, i.e. total elapsed client time minus server processing time.
+         *
+         * Exposed so callers selecting among several probe replies (e.g. "burst-then-best"
+         * sampling) can rank them by the same RTT definition [processMeasurement] uses
+         * internally for its measurement-noise model.
+         */
+        fun rttMicros(t1: Long, t2: Long, t3: Long, t4: Long): Long = (t4 - t1) - (t3 - t2)
 
         /**
          * Computes current track progress (ms) using the spec formula:

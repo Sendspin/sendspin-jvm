@@ -20,7 +20,8 @@ import kotlin.math.min
  * between calls so correction is continuous across block boundaries.
  *
  * One instance should be used per continuous playback stream (reset via [reset] on flush/seek/
- * stream transition, since the carried-over phase and last known drift no longer apply).
+ * stream transition, since the carried-over fractional read position no longer corresponds to
+ * a meaningful position in the new stream).
  */
 class PcmDriftCorrector(
     private val channelCount: Int,
@@ -28,6 +29,7 @@ class PcmDriftCorrector(
 ) {
     init {
         require(channelCount > 0) { "channelCount must be positive" }
+        require(maxCorrectionPpm >= 0.0) { "maxCorrectionPpm must not be negative" }
     }
 
     // Fractional read position into the most recent input block, carried across calls so the
@@ -76,8 +78,11 @@ class PcmDriftCorrector(
             pos += step
         }
 
-        // Carry the overshoot into the next block; clamp defensively in case of a degenerate
-        // (near-zero-length) input so phase can't grow unbounded.
+        // Carry the overshoot into the next block. Given frameCount >= 2 and phase always in
+        // [0, 1], `pos - lastFrame` is mathematically guaranteed to land in [0, step] <= [0, 1]
+        // at this point — the clamp is purely defensive against a future change to the loop
+        // bounds or step range silently breaking that invariant (which would otherwise corrupt
+        // `pos.toInt()` indexing on the next call in a hard-to-diagnose way).
         phase = min(pos - lastFrame, 1.0).coerceAtLeast(0.0)
 
         return out.toShortArray()

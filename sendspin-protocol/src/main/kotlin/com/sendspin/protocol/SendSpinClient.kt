@@ -369,7 +369,9 @@ class SendSpinClient(
                 val t4 = ClockSync.localMicros()
                 burstReplies.add(msg to t4)
                 if (burstReplies.size >= ClockSyncConfig.PROBES_PER_BURST) {
-                    val (best, bestT4) = burstReplies.minByOrNull { (m, replyT4) -> rttMicros(m, replyT4) }!!
+                    val (best, bestT4) = burstReplies.minByOrNull { (m, replyT4) ->
+                        ClockSync.rttMicros(m.clientTime, m.serverReceive, m.serverSend, replyT4)
+                    }!!
                     burstReplies.clear()
                     clockSync.processMeasurement(best.clientTime, best.serverReceive, best.serverSend, bestT4)
                 }
@@ -685,10 +687,6 @@ class SendSpinClient(
         firstMeasurementCompleted = false
         burstReplies.clear()
     }
-
-    /** RTT for a single probe round-trip: (t4 - t1) - (t3 - t2). */
-    private fun rttMicros(reply: ServerTime, t4: Long): Long =
-        (t4 - reply.clientTime) - (reply.serverSend - reply.serverReceive)
 
     private fun cleanupJobs() {
         clockJob?.cancel(); clockJob = null

@@ -19,7 +19,7 @@ class AudioBuffer(
     private val lock = Any()
 
     // Ordered by server timestamp (ascending) — local playback time is computed live at poll
-    // time from the current ClockSync estimate, never baked in (see toScheduledMicros).
+    // time from the current ClockSync estimate, never baked in (see scheduledMicros).
     private val queue = PriorityQueue<QueuedChunk>(
         capacity,
         compareBy { it.chunk.serverTimestampMicros },
