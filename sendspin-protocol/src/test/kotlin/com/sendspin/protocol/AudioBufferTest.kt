@@ -147,6 +147,25 @@ class AudioBufferTest {
         assertTrue(!buffer.underrunState.value)
     }
 
+    // ── Deferred conversion (live schedule recomputation) ────────────────────
+
+    @Test
+    fun `clock correction after offer immediately reshapes schedule of queued chunks`() {
+        val now = System.nanoTime() / 1_000L
+        // Initially identity: chunk scheduled for now + 2s
+        buffer.offer(chunk(now + 2_000_000L))
+        assertNull(buffer.poll(now)) // not ready yet under the original estimate
+
+        // Simulate a clock correction: offset jumps by -1.5s, so the same server timestamp
+        // now maps to now + 0.5s instead of now + 2s.
+        every { clockSync.toLocalMicros(any(), any()) } answers { firstArg<Long>() - 1_500_000L }
+
+        // The already-queued chunk's effective schedule should reflect the new estimate
+        // immediately — not the stale value baked in at offer() time.
+        assertNull(buffer.poll(now)) // still not ready: now + 0.5s > now
+        assertNotNull(buffer.poll(now + 500_000L))
+    }
+
     // ── Static delay ─────────────────────────────────────────────────────────
 
     @Test
