@@ -70,7 +70,7 @@ gates (late/far-future drop, furthest-future eviction) still use the snapshot at
 Added regression test `clock correction after offer immediately reshapes schedule of queued
 chunks` to `AudioBufferTest`. Full `:sendspin-protocol:test` suite passes.
 
-## Step 2: Re-evaluate burst-then-best / reference-aligned sampling
+## Step 2: Re-evaluate burst-then-best / reference-aligned sampling — DONE
 
 With step 1 landed, large discrete offset corrections no longer create stale-schedule seams, so
 it becomes safe to revisit aligning `ClockSync` consumption with the reference cadence (buffer
@@ -93,6 +93,20 @@ better than the current per-sample approach.
 
 **Verify**: `./gradlew :sendspin-protocol:test` plus manual/real-device playback testing for
 audible artifacts. Stop here for review/testing before step 3.
+
+**Result**: Implemented burst-then-best in `SendSpinClient` — `ServerTime` replies are buffered
+in `burstReplies` as they arrive; once `PROBES_PER_BURST` (8) replies have accumulated, the
+lowest-RTT sample (via new `rttMicros()` helper using the standard NTP RTT formula) is fed to
+`clockSync.processMeasurement()` once, and the buffer is cleared (also cleared in
+`clearSessionState()` on reconnect). Probe send cadence (`BURST_INTERVAL_MS` /
+`PROBES_PER_BURST` / `PROBE_INTERVAL_MS`) is unchanged — only consumption changed, mirroring the
+original failed experiment but now safe because step 1 made `AudioBuffer` recompute schedules
+live. `:sendspin-protocol:test` passes (no existing tests exercised `ServerTime` handling in
+`SendSpinClient`, so no test updates were needed beyond the build staying green).
+**Manual/real-device playback validation for audible artifacts is still needed** — that can't be
+done from this environment; please test on-device before merging. Cadence/drift-convergence
+tuning (mentioned as an open question) was left as-is since it's an orthogonal concern from the
+sampling-strategy change requested here.
 
 ## Step 3: In-SDK sample insert/drop
 
