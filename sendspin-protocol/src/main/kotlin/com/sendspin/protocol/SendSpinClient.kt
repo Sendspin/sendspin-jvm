@@ -436,8 +436,18 @@ class SendSpinClient(
                 if (endVisualizer) _visualizerStreamConfig.value = null
             }
             is GroupUpdate -> {
-                Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
+                Timber.d("SendSpinClient: group/update state=%s volume=%s muted=%s",
+                    msg.typedPlaybackState, msg.volume, msg.muted)
                 msg.typedPlaybackState?.let { _groupPlaybackState.value = it }
+                if (msg.volume != null || msg.muted != null) {
+                    val current = _controllerState.value
+                    val merged = current?.copy(
+                        volume = msg.volume ?: current.volume,
+                        muted  = msg.muted  ?: current.muted,
+                    ) ?: ControllerState(volume = msg.volume, muted = msg.muted)
+                    _controllerState.value = merged
+                    applyVolumeToPlayer(merged)
+                }
             }
             is ServerCommand -> {
                 val ctrl = msg.controller ?: return
