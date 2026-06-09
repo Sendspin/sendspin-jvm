@@ -439,6 +439,17 @@ class SendSpinClient(
                 Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
                 msg.typedPlaybackState?.let { _groupPlaybackState.value = it }
             }
+            is ServerCommand -> {
+                val ctrl = msg.controller ?: return
+                Timber.d("SendSpinClient: server/command volume=%s muted=%s", ctrl.volume, ctrl.muted)
+                val current = _controllerState.value
+                val merged = current?.copy(
+                    volume = ctrl.volume ?: current.volume,
+                    muted  = ctrl.muted  ?: current.muted,
+                ) ?: ctrl
+                _controllerState.value = merged
+                applyVolumeToPlayer(merged)
+            }
             is UnknownMessage -> Timber.d("SendSpinClient: unknown message type '%s'", msg.type)
             null -> { /* parse error already logged by MessageParser */ }
             else -> { /* sealed when — exhaustive */ }

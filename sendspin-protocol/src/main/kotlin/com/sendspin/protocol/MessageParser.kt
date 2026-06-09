@@ -26,7 +26,8 @@ class MessageParser(moshi: Moshi) {
     private val serverTimeAdapter  = moshi.adapter(ServerTime::class.java)
     private val streamStartAdapter = moshi.adapter(StreamStart::class.java)
     private val streamEndAdapter   = moshi.adapter(StreamEnd::class.java)
-    private val groupUpdateAdapter = moshi.adapter(GroupUpdate::class.java)
+    private val groupUpdateAdapter    = moshi.adapter(GroupUpdate::class.java)
+    private val serverCommandAdapter  = moshi.adapter(ServerCommand::class.java)
 
     // ── Text (JSON) ───────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ class MessageParser(moshi: Moshi) {
                 "stream/clear"   -> StreamClear
                 "stream/end"     -> streamEndAdapter.fromJson(body) ?: StreamEnd()
                 "group/update"   -> groupUpdateAdapter.fromJson(body)
+                "server/command" -> serverCommandAdapter.fromJson(body)
                 else             -> UnknownMessage(type).also {
                     Timber.v("MessageParser: unknown message type '%s'", type)
                 }
