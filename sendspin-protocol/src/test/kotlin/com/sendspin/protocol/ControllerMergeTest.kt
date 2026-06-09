@@ -34,6 +34,7 @@ class ControllerMergeTest {
             override fun flush() {}
             override fun stop() {}
             override fun transition(format: StreamFormat) {}
+            override fun setVolume(gain: Float) {}
         }
     }
 

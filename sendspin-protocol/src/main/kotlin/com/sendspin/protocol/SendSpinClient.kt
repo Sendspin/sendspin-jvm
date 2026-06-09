@@ -1,6 +1,7 @@
 package com.sendspin.protocol
 
 import com.squareup.moshi.Moshi
+import kotlin.math.pow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -352,6 +353,7 @@ class SendSpinClient(
                 val effectiveController = mergeControllerWithMetadata(msg)
                 if (effectiveController != null) {
                     _controllerState.value = effectiveController
+                    applyVolumeToPlayer(effectiveController)
                 }
                 if (msg.color != null) _colorState.value = msg.color
                 _serverState.tryEmit(msg)
@@ -441,6 +443,13 @@ class SendSpinClient(
             null -> { /* parse error already logged by MessageParser */ }
             else -> { /* sealed when — exhaustive */ }
         }
+    }
+
+    private fun applyVolumeToPlayer(controller: ControllerState?) {
+        val vol = controller?.volume ?: return
+        val muted = controller.muted ?: false
+        val gain = if (muted) 0f else (vol / 100.0).pow(1.5).toFloat()
+        audioPlayer.setVolume(gain)
     }
 
     @Suppress("DEPRECATION")
