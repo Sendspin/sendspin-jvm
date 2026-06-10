@@ -1,6 +1,7 @@
 package com.sendspin.protocol
 
 import com.squareup.moshi.Moshi
+import kotlin.math.pow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -152,6 +153,14 @@ class SendSpinClient(
     @Volatile private var staticDelayMs: Int = 0
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
+
+    // Per-player volume/mute, as set via server/command (player.command = "volume" | "mute").
+    // Reported back to the server in client/state's player.volume / player.muted.
+    // Default to full volume / unmuted: the spec requires these fields be present in
+    // client/state whenever "volume"/"mute" are in supported_commands, even before the
+    // server has sent an explicit command.
+    @Volatile private var playerVolume: Int = 100
+    @Volatile private var playerMuted: Boolean = false
 
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
@@ -447,13 +456,74 @@ class SendSpinClient(
                 if (endVisualizer) _visualizerStreamConfig.value = null
             }
             is GroupUpdate -> {
-                Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
+                // Group volume/muted are the average/aggregate across all players in the group —
+                // a UI-facing concept, not this player's own gain. Only group-level controller
+                // state is updated here; this player's gain is driven solely by server/command.
+                Timber.d("SendSpinClient: group/update state=%s volume=%s muted=%s",
+                    msg.typedPlaybackState, msg.volume, msg.muted)
                 msg.typedPlaybackState?.let { _groupPlaybackState.value = it }
+                if (msg.volume != null || msg.muted != null) {
+                    val current = _controllerState.value
+                    _controllerState.value = current?.copy(
+                        volume = msg.volume ?: current.volume,
+                        muted  = msg.muted  ?: current.muted,
+                    ) ?: ControllerState(volume = msg.volume, muted = msg.muted)
+                }
+            }
+            is ServerCommand -> {
+                val player = msg.player ?: return
+                Timber.d("SendSpinClient: server/command player command=%s volume=%s mute=%s static_delay_ms=%s",
+                    player.command, player.volume, player.mute, player.staticDelayMs)
+                when (player.command) {
+                    "volume" -> {
+                        val requested = player.volume
+                        if (requested == null) {
+                            Timber.w("SendSpinClient: server/command volume missing 'volume' field, ignoring")
+                        } else {
+                            val clamped = requested.coerceIn(0, 100)
+                            if (clamped != requested) {
+                                Timber.w("SendSpinClient: server/command volume=%d out of range, clamped to %d", requested, clamped)
+                            }
+                            playerVolume = clamped
+                            applyVolumeToPlayer()
+                            sendClientState()
+                        }
+                    }
+                    "mute" -> {
+                        val requested = player.mute
+                        if (requested == null) {
+                            Timber.w("SendSpinClient: server/command mute missing 'mute' field, ignoring")
+                        } else {
+                            playerMuted = requested
+                            applyVolumeToPlayer()
+                            sendClientState()
+                        }
+                    }
+                    "set_static_delay" -> {
+                        val ms = player.staticDelayMs
+                        if (ms == null) {
+                            Timber.w("SendSpinClient: server/command set_static_delay missing 'static_delay_ms' field, ignoring")
+                        } else {
+                            setStaticDelayMs(ms)
+                        }
+                    }
+                    else -> Timber.d("SendSpinClient: unhandled server/command player.command=%s", player.command)
+                }
             }
             is UnknownMessage -> Timber.d("SendSpinClient: unknown message type '%s'", msg.type)
             null -> { /* parse error already logged by MessageParser */ }
             else -> { /* sealed when — exhaustive */ }
         }
+    }
+
+    /**
+     * Applies this player's own volume/mute (set via server/command) to the audio output,
+     * converting the perceived-loudness value (0-100) to a linear gain via (vol/100)^1.5.
+     * Defaults to full volume until the server sends an explicit player volume command.
+     */
+    private fun applyVolumeToPlayer() {
+        val gain = if (playerMuted) 0f else (playerVolume / 100.0).pow(1.5).toFloat()
+        audioPlayer.setVolume(gain)
     }
 
     @Suppress("DEPRECATION")
@@ -577,6 +647,7 @@ class SendSpinClient(
         lastConnectionReason = msg.connectionReason
         Timber.i("SendSpinClient: server hello from '%s' reason=%s", serverNameStr, msg.connectionReason)
         _state.value = ClientState.CLOCK_SYNCING
+        applyVolumeToPlayer()
         sendClientState()
         startClockSync()
         startPeriodicStateReports()
@@ -606,10 +677,9 @@ class SendSpinClient(
     // ── Periodic client/state ─────────────────────────────────────────────────
 
     private fun sendClientState() {
-        val controller = _controllerState.value
         val player = PlayerStatePayload(
-            volume = controller?.volume,
-            muted = controller?.muted,
+            volume = playerVolume,
+            muted = playerMuted,
             staticDelayMs = staticDelayMs,
             requiredLeadTimeMs = requiredLeadTimeMs,
             minBufferMs = minBufferMs,

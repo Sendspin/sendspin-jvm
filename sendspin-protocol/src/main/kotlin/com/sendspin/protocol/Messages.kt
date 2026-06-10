@@ -199,8 +199,8 @@ data class ProgressInfo(
 @JsonClass(generateAdapter = true)
 data class ControllerState(
     @Json(name = "supported_commands") val supportedCommands: List<String> = emptyList(),
-    @Json(name = "volume") val volume: Int = 100,
-    @Json(name = "muted") val muted: Boolean = false,
+    @Json(name = "volume") val volume: Int? = null,
+    @Json(name = "muted") val muted: Boolean? = null,
     @Json(name = "repeat") val repeat: JsonOptional<String> = JsonOptional.Absent,
     @Json(name = "shuffle") val shuffle: JsonOptional<Boolean> = JsonOptional.Absent,
 )
@@ -287,6 +287,21 @@ data class GroupUpdate(
         else      -> null
     }
 }
+
+/** Player-targeted command within a `server/command` message. */
+@JsonClass(generateAdapter = true)
+data class ServerCommandPlayerPayload(
+    @Json(name = "command") val command: String,
+    @Json(name = "volume") val volume: Int? = null,
+    @Json(name = "mute") val mute: Boolean? = null,
+    @Json(name = "static_delay_ms") val staticDelayMs: Int? = null,
+)
+
+/** Server-initiated command, e.g. a per-player volume/mute/delay change. */
+@JsonClass(generateAdapter = true)
+data class ServerCommand(
+    @Json(name = "player") val player: ServerCommandPlayerPayload? = null,
+) : IncomingMessage
 
 /** Unrecognised / unhandled message type — ignored gracefully. */
 data class UnknownMessage(val type: String) : IncomingMessage
