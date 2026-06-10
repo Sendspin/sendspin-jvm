@@ -150,8 +150,11 @@ class SendSpinClient(
 
     // Per-player volume/mute, as set via server/command (player.command = "volume" | "mute").
     // Reported back to the server in client/state's player.volume / player.muted.
-    @Volatile private var playerVolume: Int? = null
-    @Volatile private var playerMuted: Boolean? = null
+    // Default to full volume / unmuted: the spec requires these fields be present in
+    // client/state whenever "volume"/"mute" are in supported_commands, even before the
+    // server has sent an explicit command.
+    @Volatile private var playerVolume: Int = 100
+    @Volatile private var playerMuted: Boolean = false
 
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
@@ -459,17 +462,38 @@ class SendSpinClient(
                 Timber.d("SendSpinClient: server/command player command=%s volume=%s mute=%s static_delay_ms=%s",
                     player.command, player.volume, player.mute, player.staticDelayMs)
                 when (player.command) {
-                    "volume" -> player.volume?.let {
-                        playerVolume = it.coerceIn(0, 100)
-                        applyVolumeToPlayer()
-                        sendClientState()
+                    "volume" -> {
+                        val requested = player.volume
+                        if (requested == null) {
+                            Timber.w("SendSpinClient: server/command volume missing 'volume' field, ignoring")
+                        } else {
+                            val clamped = requested.coerceIn(0, 100)
+                            if (clamped != requested) {
+                                Timber.w("SendSpinClient: server/command volume=%d out of range, clamped to %d", requested, clamped)
+                            }
+                            playerVolume = clamped
+                            applyVolumeToPlayer()
+                            sendClientState()
+                        }
                     }
-                    "mute" -> player.mute?.let {
-                        playerMuted = it
-                        applyVolumeToPlayer()
-                        sendClientState()
+                    "mute" -> {
+                        val requested = player.mute
+                        if (requested == null) {
+                            Timber.w("SendSpinClient: server/command mute missing 'mute' field, ignoring")
+                        } else {
+                            playerMuted = requested
+                            applyVolumeToPlayer()
+                            sendClientState()
+                        }
                     }
-                    "set_static_delay" -> player.staticDelayMs?.let { setStaticDelayMs(it) }
+                    "set_static_delay" -> {
+                        val ms = player.staticDelayMs
+                        if (ms == null) {
+                            Timber.w("SendSpinClient: server/command set_static_delay missing 'static_delay_ms' field, ignoring")
+                        } else {
+                            setStaticDelayMs(ms)
+                        }
+                    }
                     else -> Timber.d("SendSpinClient: unhandled server/command player.command=%s", player.command)
                 }
             }
@@ -485,9 +509,7 @@ class SendSpinClient(
      * Defaults to full volume until the server sends an explicit player volume command.
      */
     private fun applyVolumeToPlayer() {
-        val vol = playerVolume ?: 100
-        val muted = playerMuted ?: false
-        val gain = if (muted) 0f else (vol / 100.0).pow(1.5).toFloat()
+        val gain = if (playerMuted) 0f else (playerVolume / 100.0).pow(1.5).toFloat()
         audioPlayer.setVolume(gain)
     }
 
@@ -612,6 +634,7 @@ class SendSpinClient(
         lastConnectionReason = msg.connectionReason
         Timber.i("SendSpinClient: server hello from '%s' reason=%s", serverNameStr, msg.connectionReason)
         _state.value = ClientState.CLOCK_SYNCING
+        applyVolumeToPlayer()
         sendClientState()
         startClockSync()
         startPeriodicStateReports()

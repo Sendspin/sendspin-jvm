@@ -94,4 +94,48 @@ class VolumeCurveTest {
         assertEquals(3, gains.size)
         assertEquals(expected, gains[2], 0.001f)
     }
+
+    @Test
+    fun `out-of-range volume is clamped to 0-100`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":150}}}""")
+        assertEquals(1, gains.size)
+        assertEquals(1.0f, gains[0], 0.001f)
+    }
+
+    @Test
+    fun `volume command missing volume field is ignored`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume"}}}""")
+        assertEquals(0, gains.size)
+    }
+
+    @Test
+    fun `mute command missing mute field is ignored`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"mute"}}}""")
+        assertEquals(0, gains.size)
+    }
+
+    @Test
+    fun `set_static_delay command applies delay to audio buffer`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"set_static_delay","static_delay_ms":250}}}""")
+        assertEquals(250_000L, client.audioBuffer.staticDelayMicros)
+        // Volume command path is unaffected by a static-delay command.
+        assertEquals(0, gains.size)
+    }
+
+    @Test
+    fun `group update volume does not affect player gain`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"group/update","payload":{"volume":30,"muted":false}}""")
+        assertEquals(0, gains.size)
+        assertEquals(30, client.controllerState.value?.volume)
+    }
 }
