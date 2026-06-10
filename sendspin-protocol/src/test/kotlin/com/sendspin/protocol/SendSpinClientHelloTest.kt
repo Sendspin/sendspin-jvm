@@ -49,6 +49,7 @@ class SendSpinClientHelloTest {
         softwareVersion: String = "14",
         macAddress: String? = null,
         preferences: ClientPreferences = defaultPreferences,
+        settingsStore: ClientSettingsStore = NoOpClientSettingsStore,
     ) = SendSpinClient(
         okHttpClient = OkHttpClient.Builder().build(),
         moshi = moshi,
@@ -60,6 +61,7 @@ class SendSpinClientHelloTest {
         softwareVersion = softwareVersion,
         macAddress = macAddress,
         audioPlayerFactory = noOpPlayerFactory,
+        settingsStore = settingsStore,
     )
 
     private fun parseHello(json: String): ClientHello =
