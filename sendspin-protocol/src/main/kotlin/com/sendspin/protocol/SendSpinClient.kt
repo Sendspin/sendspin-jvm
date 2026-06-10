@@ -78,6 +78,7 @@ class SendSpinClient(
     audioPlayerFactory: (AudioBuffer, ClockSync) -> AudioPlayer,
     /** Set to false to prevent automatic reconnection on disconnect (e.g. in conformance tests). */
     private val reconnectEnabled: Boolean = true,
+    private val settingsStore: ClientSettingsStore = NoOpClientSettingsStore,
 ) {
     val clockSync = ClockSync()
     val audioBuffer = AudioBuffer(clockSync)
@@ -150,7 +151,11 @@ class SendSpinClient(
     private val _visualizerStreamConfig = MutableStateFlow<StreamVisualizerConfig?>(null)
     val visualizerStreamConfig: StateFlow<StreamVisualizerConfig?> = _visualizerStreamConfig
 
-    @Volatile private var staticDelayMs: Int = 0
+    @Volatile private var staticDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.STATIC_DELAY_MS, 0)
+        .coerceIn(0, 5000)
+    init {
+        audioBuffer.staticDelayMicros = staticDelayMs * 1_000L
+    }
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
 
@@ -165,6 +170,7 @@ class SendSpinClient(
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
         audioBuffer.staticDelayMicros = staticDelayMs * 1_000L
+        settingsStore.putInt(ClientSettingsKeys.STATIC_DELAY_MS, staticDelayMs)
         sendClientState()
         // Chunks already in the buffer retain their old scheduled times; the new delay applies
         // only to newly arriving chunks. The transition resolves within one server buffer window

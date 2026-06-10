@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Pull requests
+
+PRs must always target the **upstream remote** (`Sendspin/sendspin-jvm`), not the fork. Use `--repo Sendspin/sendspin-jvm --head <fork-owner>:<branch>` when calling `gh pr create`.
+
 ## Build commands
 
 Requires JDK 17. On macOS the system stub at `/usr/bin/java` may not work; set `JAVA_HOME` to a real JDK first (e.g. the Android Studio JBR at `/Applications/Android Studio.app/Contents/jbr/Contents/Home`).
