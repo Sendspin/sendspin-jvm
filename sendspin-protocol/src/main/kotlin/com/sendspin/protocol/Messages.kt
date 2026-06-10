@@ -288,10 +288,19 @@ data class GroupUpdate(
     }
 }
 
-/** Server-initiated command (e.g. a volume change pushed by the server). */
+/** Player-targeted command within a `server/command` message. */
+@JsonClass(generateAdapter = true)
+data class ServerCommandPlayerPayload(
+    @Json(name = "command") val command: String,
+    @Json(name = "volume") val volume: Int? = null,
+    @Json(name = "mute") val mute: Boolean? = null,
+    @Json(name = "static_delay_ms") val staticDelayMs: Int? = null,
+)
+
+/** Server-initiated command, e.g. a per-player volume/mute/delay change. */
 @JsonClass(generateAdapter = true)
 data class ServerCommand(
-    @Json(name = "controller") val controller: ControllerState? = null,
+    @Json(name = "player") val player: ServerCommandPlayerPayload? = null,
 ) : IncomingMessage
 
 /** Unrecognised / unhandled message type — ignored gracefully. */

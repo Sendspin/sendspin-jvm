@@ -148,6 +148,11 @@ class SendSpinClient(
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
 
+    // Per-player volume/mute, as set via server/command (player.command = "volume" | "mute").
+    // Reported back to the server in client/state's player.volume / player.muted.
+    @Volatile private var playerVolume: Int? = null
+    @Volatile private var playerMuted: Boolean? = null
+
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
         audioBuffer.staticDelayMicros = staticDelayMs * 1_000L
@@ -353,7 +358,6 @@ class SendSpinClient(
                 val effectiveController = mergeControllerWithMetadata(msg)
                 if (effectiveController != null) {
                     _controllerState.value = effectiveController
-                    applyVolumeToPlayer(effectiveController)
                 }
                 if (msg.color != null) _colorState.value = msg.color
                 _serverState.tryEmit(msg)
@@ -436,29 +440,38 @@ class SendSpinClient(
                 if (endVisualizer) _visualizerStreamConfig.value = null
             }
             is GroupUpdate -> {
+                // Group volume/muted are the average/aggregate across all players in the group —
+                // a UI-facing concept, not this player's own gain. Only group-level controller
+                // state is updated here; this player's gain is driven solely by server/command.
                 Timber.d("SendSpinClient: group/update state=%s volume=%s muted=%s",
                     msg.typedPlaybackState, msg.volume, msg.muted)
                 msg.typedPlaybackState?.let { _groupPlaybackState.value = it }
                 if (msg.volume != null || msg.muted != null) {
                     val current = _controllerState.value
-                    val merged = current?.copy(
+                    _controllerState.value = current?.copy(
                         volume = msg.volume ?: current.volume,
                         muted  = msg.muted  ?: current.muted,
                     ) ?: ControllerState(volume = msg.volume, muted = msg.muted)
-                    _controllerState.value = merged
-                    applyVolumeToPlayer(merged)
                 }
             }
             is ServerCommand -> {
-                val ctrl = msg.controller ?: return
-                Timber.d("SendSpinClient: server/command volume=%s muted=%s", ctrl.volume, ctrl.muted)
-                val current = _controllerState.value
-                val merged = current?.copy(
-                    volume = ctrl.volume ?: current.volume,
-                    muted  = ctrl.muted  ?: current.muted,
-                ) ?: ctrl
-                _controllerState.value = merged
-                applyVolumeToPlayer(merged)
+                val player = msg.player ?: return
+                Timber.d("SendSpinClient: server/command player command=%s volume=%s mute=%s static_delay_ms=%s",
+                    player.command, player.volume, player.mute, player.staticDelayMs)
+                when (player.command) {
+                    "volume" -> player.volume?.let {
+                        playerVolume = it.coerceIn(0, 100)
+                        applyVolumeToPlayer()
+                        sendClientState()
+                    }
+                    "mute" -> player.mute?.let {
+                        playerMuted = it
+                        applyVolumeToPlayer()
+                        sendClientState()
+                    }
+                    "set_static_delay" -> player.staticDelayMs?.let { setStaticDelayMs(it) }
+                    else -> Timber.d("SendSpinClient: unhandled server/command player.command=%s", player.command)
+                }
             }
             is UnknownMessage -> Timber.d("SendSpinClient: unknown message type '%s'", msg.type)
             null -> { /* parse error already logged by MessageParser */ }
@@ -466,9 +479,14 @@ class SendSpinClient(
         }
     }
 
-    private fun applyVolumeToPlayer(controller: ControllerState?) {
-        val vol = controller?.volume ?: return
-        val muted = controller.muted ?: false
+    /**
+     * Applies this player's own volume/mute (set via server/command) to the audio output,
+     * converting the perceived-loudness value (0-100) to a linear gain via (vol/100)^1.5.
+     * Defaults to full volume until the server sends an explicit player volume command.
+     */
+    private fun applyVolumeToPlayer() {
+        val vol = playerVolume ?: 100
+        val muted = playerMuted ?: false
         val gain = if (muted) 0f else (vol / 100.0).pow(1.5).toFloat()
         audioPlayer.setVolume(gain)
     }
@@ -623,10 +641,9 @@ class SendSpinClient(
     // ── Periodic client/state ─────────────────────────────────────────────────
 
     private fun sendClientState() {
-        val controller = _controllerState.value
         val player = PlayerStatePayload(
-            volume = controller?.volume,
-            muted = controller?.muted,
+            volume = playerVolume,
+            muted = playerMuted,
             staticDelayMs = staticDelayMs,
             requiredLeadTimeMs = requiredLeadTimeMs,
             minBufferMs = minBufferMs,

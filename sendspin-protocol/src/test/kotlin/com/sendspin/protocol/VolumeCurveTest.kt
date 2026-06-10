@@ -46,39 +46,52 @@ class VolumeCurveTest {
     }
 
     @Test
-    fun `volume 100 unmuted yields gain 1`() {
+    fun `server command volume 100 yields gain 1`() {
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
-        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"volume":100,"muted":false}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":100}}}""")
         assertEquals(1, gains.size)
         assertEquals(1.0f, gains[0], 0.001f)
     }
 
     @Test
-    fun `volume 0 unmuted yields gain 0`() {
+    fun `server command volume 0 yields gain 0`() {
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
-        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"volume":0,"muted":false}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":0}}}""")
         assertEquals(1, gains.size)
         assertEquals(0.0f, gains[0], 0.001f)
     }
 
     @Test
-    fun `volume 50 unmuted yields perceptual curve gain`() {
+    fun `server command volume 50 yields perceptual curve gain`() {
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
-        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"volume":50,"muted":false}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":50}}}""")
         val expected = (50 / 100.0).pow(1.5).toFloat()
         assertEquals(1, gains.size)
         assertEquals(expected, gains[0], 0.001f)
     }
 
     @Test
-    fun `muted yields gain 0 regardless of volume`() {
+    fun `server command mute yields gain 0 regardless of volume`() {
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
-        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"volume":80,"muted":true}}}""")
-        assertEquals(1, gains.size)
-        assertEquals(0.0f, gains[0], 0.001f)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":80}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"mute","mute":true}}}""")
+        assertEquals(2, gains.size)
+        assertEquals(0.0f, gains[1], 0.001f)
+    }
+
+    @Test
+    fun `unmuting restores previous volume curve gain`() {
+        val gains = mutableListOf<Float>()
+        val client = buildClientWithCapture(gains)
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":80}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"mute","mute":true}}}""")
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"mute","mute":false}}}""")
+        val expected = (80 / 100.0).pow(1.5).toFloat()
+        assertEquals(3, gains.size)
+        assertEquals(expected, gains[2], 0.001f)
     }
 }
