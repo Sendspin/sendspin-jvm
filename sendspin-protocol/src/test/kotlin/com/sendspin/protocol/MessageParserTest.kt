@@ -46,6 +46,26 @@ class MessageParserTest {
     }
 
     @Test
+    fun `unrecognized payload fields are ignored, not fatal (spec PR #113 forward compatibility)`() {
+        val json = """
+            {
+              "type": "server/hello",
+              "payload": {
+                "server_id": "abc123",
+                "name": "My Server",
+                "version": 1,
+                "active_roles": ["player@v1"],
+                "future_field_this_client_does_not_know_about": {"nested": true}
+              }
+            }
+        """.trimIndent()
+
+        val msg = parser.parseText(json)
+        assertTrue(msg is ServerHello)
+        assertEquals("My Server", (msg as ServerHello).name)
+    }
+
+    @Test
     fun `parse server state with metadata`() {
         val json = """
             {
@@ -278,7 +298,7 @@ class MessageParserTest {
         )
         val json = adapter.toJson(msg)
         assertTrue(json.contains(""""type":"client/state""""))
-        assertTrue(json.contains(""""state":"synchronized""""))
+        assertTrue(json.contains(""""available":true"""))
         assertTrue(json.contains(""""player":{"""))
         assertTrue(json.contains(""""static_delay_ms":200"""))
     }

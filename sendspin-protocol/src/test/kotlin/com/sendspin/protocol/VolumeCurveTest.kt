@@ -131,11 +131,14 @@ class VolumeCurveTest {
     }
 
     @Test
-    fun `group update volume does not affect player gain`() {
+    fun `group update does not affect player gain or controller state`() {
+        // group/update no longer carries volume/muted (spec PR #113/#115 moved those fully
+        // into the controller role's server/state object) — legacy/unknown fields on the
+        // payload must be ignored rather than crashing or leaking into controller state.
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
         client.handleTextMessage("""{"type":"group/update","payload":{"volume":30,"muted":false}}""")
         assertEquals(0, gains.size)
-        assertEquals(30, client.controllerState.value?.volume)
+        assertEquals(null, client.controllerState.value?.volume)
     }
 }
