@@ -25,6 +25,7 @@ class MessageParser(moshi: Moshi) {
     private val serverStateAdapter = moshi.adapter(ServerState::class.java)
     private val serverTimeAdapter  = moshi.adapter(ServerTime::class.java)
     private val streamStartAdapter = moshi.adapter(StreamStart::class.java)
+    private val streamClearAdapter = moshi.adapter(StreamClear::class.java)
     private val streamEndAdapter   = moshi.adapter(StreamEnd::class.java)
     private val groupUpdateAdapter    = moshi.adapter(GroupUpdate::class.java)
     private val serverCommandAdapter  = moshi.adapter(ServerCommand::class.java)
@@ -42,7 +43,7 @@ class MessageParser(moshi: Moshi) {
                 "server/state"   -> serverStateAdapter.fromJson(body)
                 "server/time"    -> serverTimeAdapter.fromJson(body)
                 "stream/start"   -> streamStartAdapter.fromJson(body)
-                "stream/clear"   -> StreamClear
+                "stream/clear"   -> streamClearAdapter.fromJson(body) ?: StreamClear()
                 "stream/end"     -> streamEndAdapter.fromJson(body) ?: StreamEnd()
                 "group/update"   -> groupUpdateAdapter.fromJson(body)
                 "server/command" -> serverCommandAdapter.fromJson(body)

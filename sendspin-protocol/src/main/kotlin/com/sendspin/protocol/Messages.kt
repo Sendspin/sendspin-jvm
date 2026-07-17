@@ -263,8 +263,11 @@ data class StreamFormat(
     @Json(name = "codec_header") val codecHeader: String? = null,
 )
 
-/** Server cleared the buffer (e.g. on seek). */
-object StreamClear : IncomingMessage
+/** Server cleared the buffer (e.g. on seek). Null [roles] means both player and visualizer. */
+@JsonClass(generateAdapter = true)
+data class StreamClear(
+    @Json(name = "roles") val roles: List<String>? = null,
+) : IncomingMessage
 
 /** Server stopped one or more role streams. Null [roles] means all active streams. */
 @JsonClass(generateAdapter = true)
