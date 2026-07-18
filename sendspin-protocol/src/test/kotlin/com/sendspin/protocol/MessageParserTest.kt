@@ -157,9 +157,15 @@ class MessageParserTest {
     }
 
     @Test
-    fun `parse stream clear`() {
-        val msg = parser.parseText("""{"type":"stream/clear"}""")
-        assertTrue(msg is StreamClear)
+    fun `parse stream clear no roles`() {
+        val msg = parser.parseText("""{"type":"stream/clear"}""") as StreamClear
+        assertNull(msg.roles)
+    }
+
+    @Test
+    fun `parse stream clear with roles`() {
+        val msg = parser.parseText("""{"type":"stream/clear","payload":{"roles":["visualizer"]}}""") as StreamClear
+        assertEquals(listOf("visualizer"), msg.roles)
     }
 
     @Test

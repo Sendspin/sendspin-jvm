@@ -462,8 +462,10 @@ class SendSpinClient(
                 }
             }
             is StreamClear -> {
-                Timber.d("SendSpinClient: stream/clear")
-                audioPlayer.flush()
+                val roles = msg.roles
+                val clearPlayer = roles == null || roles.any { it == "player@v1" || it == "player" }
+                Timber.d("SendSpinClient: stream/clear roles=%s", roles)
+                if (clearPlayer) audioPlayer.flush()
             }
             is StreamEnd -> {
                 val roles = msg.roles
