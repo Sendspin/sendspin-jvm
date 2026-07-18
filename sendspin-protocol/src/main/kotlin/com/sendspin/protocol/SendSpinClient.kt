@@ -90,6 +90,7 @@ class SendSpinClient(
     private val clientStateMsgAdapter = moshi.adapter(ClientStateMsg::class.java)
     private val clientGoodbyeAdapter  = moshi.adapter(ClientGoodbye::class.java)
     private val clientCommandAdapter  = moshi.adapter(ClientCommand::class.java)
+    private val streamRequestFormatAdapter = moshi.adapter(StreamRequestFormat::class.java)
 
     // Tracks whether the first clock measurement has been processed. Used to flush the audio
     // buffer once (after the first offset estimate is available), even if server/state already
@@ -288,6 +289,33 @@ class SendSpinClient(
         val queued = socket.send(clientCommandAdapter.toJson(msg))
         if (queued) Timber.d("SendSpinClient: >> client/command seek_relative offsetMs=%d", offsetMs)
         else Timber.w("SendSpinClient: failed to queue client/command seek_relative")
+    }
+
+    /**
+     * Requests the server switch the player stream to a different format (e.g. to adapt to
+     * changing network or CPU conditions). Unset parameters leave that aspect of the format
+     * unchanged. The requested combination must be one advertised in [ClientPreferences.supportedFormats].
+     */
+    fun requestPlayerFormat(codec: String? = null, channels: Int? = null, sampleRate: Int? = null, bitDepth: Int? = null) {
+        val socket = ws
+        if (socket == null) {
+            Timber.w("SendSpinClient: cannot send stream/request-format; disconnected")
+            return
+        }
+        val msg = StreamRequestFormat(
+            payload = StreamRequestFormatPayload(
+                player = PlayerFormatRequest(codec = codec, channels = channels, sampleRate = sampleRate, bitDepth = bitDepth)
+            )
+        )
+        val queued = socket.send(streamRequestFormatAdapter.toJson(msg))
+        if (queued) {
+            Timber.d(
+                "SendSpinClient: >> stream/request-format player codec=%s channels=%s sampleRate=%s bitDepth=%s",
+                codec, channels, sampleRate, bitDepth,
+            )
+        } else {
+            Timber.w("SendSpinClient: failed to queue stream/request-format")
+        }
     }
 
     fun disconnect(reason: String = "user_request") {
