@@ -158,6 +158,26 @@ data class ClientCommand(
     @Json(name = "payload") val payload: ClientCommandPayload,
 )
 
+/** Requested player format fields; unset fields leave that aspect of the format unchanged. */
+@JsonClass(generateAdapter = true)
+data class PlayerFormatRequest(
+    @Json(name = "codec") val codec: String? = null,
+    @Json(name = "channels") val channels: Int? = null,
+    @Json(name = "sample_rate") val sampleRate: Int? = null,
+    @Json(name = "bit_depth") val bitDepth: Int? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class StreamRequestFormatPayload(
+    @Json(name = "player") val player: PlayerFormatRequest? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class StreamRequestFormat(
+    @Json(name = "type") val type: String = "stream/request-format",
+    @Json(name = "payload") val payload: StreamRequestFormatPayload,
+)
+
 // ── Incoming messages (server → client) ──────────────────────────────────────
 
 /** Discriminated union for all server → client JSON messages. */
