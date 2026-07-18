@@ -38,6 +38,10 @@ class ClockSync {
     // Sample counter — adaptive forgetting only activates after min_samples
     private var sampleCount = 0
 
+    // First-measurement seeding guard. The initial sample initialises the filter state directly
+    // instead of being absorbed as an innovation (see [processMeasurement]).
+    private var seeded = false
+
     // ── Filter constants (reference recommended values) ───────────────────────
 
     // Process noise: no offset random-walk; drift wanders at 1e-11 (µs/µs)/√µs
@@ -83,10 +87,27 @@ class ClockSync {
 
         synchronized(lock) {
             lastRttMicros = rtt
-            predict(t4)
-            update(offsetEstimate, measurementVariance)
-            lastOffsetMicros = xOffset
-            lastDriftPpm = xDrift * 1_000_000.0
+            if (!seeded) {
+                // Seed the filter directly from the first measurement instead of letting update()
+                // absorb it. Starting xOffset at 0 makes the first innovation the entire offset
+                // (~10^12 µs against a server monotonic clock). The first predict() grows the
+                // cross-covariance p10 = dt·p11, so update()'s drift gain k1 = p10/s is no longer
+                // zero and leaks that huge innovation into xDrift (several µs/µs) — which every
+                // later predict() extrapolates into tens of seconds of offset error. Seeding keeps
+                // innovations small from the first sample on.
+                seeded = true
+                xOffset = offsetEstimate
+                xDrift = 0.0
+                lastPredictTimeMicros = t4
+                p00 = measurementVariance.coerceAtLeast(1.0)
+                lastOffsetMicros = xOffset
+                lastDriftPpm = 0.0
+            } else {
+                predict(t4)
+                update(offsetEstimate, measurementVariance)
+                lastOffsetMicros = xOffset
+                lastDriftPpm = xDrift * 1_000_000.0
+            }
         }
 
         Timber.d("ClockSync: offset=%.2f ms  drift=%.3f ppm  rtt=%d µs",
