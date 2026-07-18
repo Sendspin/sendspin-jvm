@@ -97,11 +97,16 @@ data class PlayerStatePayload(
     @Json(name = "static_delay_ms") val staticDelayMs: Int = 0,
     @Json(name = "required_lead_time_ms") val requiredLeadTimeMs: Int = 0,
     @Json(name = "min_buffer_ms") val minBufferMs: Int = 0,
+    // Commands this player accepts via client/state → server/command (spec PR #113/#115).
+    // Declaring "set_static_delay" is what makes the server actually push set_static_delay
+    // server/command messages to us; without it the server silently withholds them.
+    @Json(name = "supported_commands") val supportedCommands: List<String> = listOf("set_static_delay"),
 )
 
 @JsonClass(generateAdapter = true)
 data class ClientStateMsgPayload(
-    @Json(name = "state") val state: String = "synchronized",
+    // Top-level `available` boolean replaced the old `state` enum (spec PR #115).
+    @Json(name = "available") val available: Boolean = true,
     @Json(name = "player") val player: PlayerStatePayload? = null,
 )
 
@@ -280,8 +285,6 @@ enum class GroupPlaybackState { PLAYING, PAUSED, STOPPED }
 @JsonClass(generateAdapter = true)
 data class GroupUpdate(
     @Json(name = "playback_state") val playbackState: String? = null,
-    @Json(name = "volume") val volume: Int? = null,
-    @Json(name = "muted") val muted: Boolean? = null,
 ) : IncomingMessage {
     val typedPlaybackState: GroupPlaybackState? get() = when (playbackState) {
         "playing" -> GroupPlaybackState.PLAYING

@@ -161,11 +161,13 @@ class SendSpinClient(
 
     // Per-player volume/mute, as set via server/command (player.command = "volume" | "mute").
     // Reported back to the server in client/state's player.volume / player.muted.
-    // Default to full volume / unmuted: the spec requires these fields be present in
-    // client/state whenever "volume"/"mute" are in supported_commands, even before the
-    // server has sent an explicit command.
-    @Volatile private var playerVolume: Int = 100
-    @Volatile private var playerMuted: Boolean = false
+    // Persisted across restarts (spec PR #113: "persisting volume/muted across reboots is
+    // RECOMMENDED"), matching the static_delay_ms precedent. Default to full volume / unmuted:
+    // the spec requires these fields be present in client/state whenever "volume"/"mute" are in
+    // supported_commands, even before the server has sent an explicit command.
+    @Volatile private var playerVolume: Int = settingsStore.getInt(ClientSettingsKeys.PLAYER_VOLUME, 100)
+        .coerceIn(0, 100)
+    @Volatile private var playerMuted: Boolean = settingsStore.getInt(ClientSettingsKeys.PLAYER_MUTED, 0) != 0
 
     fun setStaticDelayMs(delayMs: Int) {
         staticDelayMs = delayMs.coerceIn(0, 5000)
@@ -494,19 +496,11 @@ class SendSpinClient(
                 if (endVisualizer) _visualizerStreamConfig.value = null
             }
             is GroupUpdate -> {
-                // Group volume/muted are the average/aggregate across all players in the group —
-                // a UI-facing concept, not this player's own gain. Only group-level controller
-                // state is updated here; this player's gain is driven solely by server/command.
-                Timber.d("SendSpinClient: group/update state=%s volume=%s muted=%s",
-                    msg.typedPlaybackState, msg.volume, msg.muted)
+                // group/update no longer carries volume/muted (spec PR #113/#115 moved those
+                // fully into the controller role's server/state object); this message is now
+                // playback_state-only as far as this client consumes it.
+                Timber.d("SendSpinClient: group/update state=%s", msg.typedPlaybackState)
                 msg.typedPlaybackState?.let { _groupPlaybackState.value = it }
-                if (msg.volume != null || msg.muted != null) {
-                    val current = _controllerState.value
-                    _controllerState.value = current?.copy(
-                        volume = msg.volume ?: current.volume,
-                        muted  = msg.muted  ?: current.muted,
-                    ) ?: ControllerState(volume = msg.volume, muted = msg.muted)
-                }
             }
             is ServerCommand -> {
                 val player = msg.player ?: return
@@ -523,6 +517,7 @@ class SendSpinClient(
                                 Timber.w("SendSpinClient: server/command volume=%d out of range, clamped to %d", requested, clamped)
                             }
                             playerVolume = clamped
+                            settingsStore.putInt(ClientSettingsKeys.PLAYER_VOLUME, playerVolume)
                             applyVolumeToPlayer()
                             sendClientState()
                         }
@@ -533,6 +528,7 @@ class SendSpinClient(
                             Timber.w("SendSpinClient: server/command mute missing 'mute' field, ignoring")
                         } else {
                             playerMuted = requested
+                            settingsStore.putInt(ClientSettingsKeys.PLAYER_MUTED, if (playerMuted) 1 else 0)
                             applyVolumeToPlayer()
                             sendClientState()
                         }
