@@ -28,8 +28,11 @@ import java.nio.ByteBuffer
  *     - send `client/goodbye` with reason `"another_server"` to the rejected socket
  *  4. Calls [SendSpinClient.acceptIncomingConnection] for the accepted socket.
  *
- * Only one pending (pre-hello) connection is accepted at a time; a second one arriving while
- * a handshake is in progress is immediately rejected with `"another_server"`.
+ * At most [maxPendingConnections] pending (pre-hello) connections are accepted at once (spec
+ * `## Multiple servers (server-initiated)`, "Clients MAY cap how many provisional connections they
+ * hold at once, rejecting further incoming connections as if they were lower priority"); a
+ * connection arriving while the cap is full is immediately rejected with `"another_server"` — the
+ * same reason used for every other rejected/displaced connection in this class.
  */
 class SendSpinServerHost(
     private val client: SendSpinClient,
@@ -39,6 +42,7 @@ class SendSpinServerHost(
     port: Int = SERVER_PORT,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val pendingHelloTimeoutMs: Long = PENDING_HELLO_TIMEOUT_MS,
+    private val maxPendingConnections: Int = MAX_PENDING_CONNECTIONS,
 ) : WebSocketServer(InetSocketAddress(port)) {
 
     private val parser = MessageParser(moshi)
@@ -58,39 +62,35 @@ class SendSpinServerHost(
     @Volatile private var activeReason: String? = null
     @Volatile private var activeServerId: String? = null
 
-    // Pending connection (waiting for server/hello before we decide).
-    // pendingLock guards the check-then-set in onOpen; java-websocket calls onOpen
-    // from per-connection worker threads, so two concurrent connections can otherwise
-    // both see pendingConn == null and both proceed.
+    // Pending connections (waiting for server/hello before we decide), keyed by socket.
+    // pendingLock guards all reads/writes; java-websocket calls onOpen/onMessage from
+    // per-connection worker threads, so concurrent connections can otherwise race on the map.
     private val pendingLock = Any()
-    @Volatile private var pendingConn: WebSocket? = null
-    @Volatile private var pendingConnTimeoutJob: Job? = null
+    private val pendingConns = mutableMapOf<WebSocket, Job>()
 
     override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
         Timber.i("SendSpinServerHost: incoming connection from %s", conn.remoteSocketAddress)
-        val alreadyPending: Boolean
-        synchronized(pendingLock) {
-            alreadyPending = pendingConn != null
-            if (!alreadyPending) pendingConn = conn
+        val overCap = synchronized(pendingLock) {
+            if (pendingConns.size >= maxPendingConnections) {
+                true
+            } else {
+                pendingConns[conn] = scope.launch {
+                    delay(pendingHelloTimeoutMs)
+                    val timedOut = synchronized(pendingLock) { pendingConns.remove(conn) != null }
+                    if (timedOut) {
+                        Timber.w("SendSpinServerHost: pending connection timed out, closing")
+                        sendGoodbye(conn, "another_server")
+                        conn.close(1000, "timeout")
+                    }
+                }
+                false
+            }
         }
-        if (alreadyPending) {
-            Timber.w("SendSpinServerHost: rejecting connection (handshake already in progress)")
+        if (overCap) {
+            Timber.w("SendSpinServerHost: rejecting connection (pending cap of %d reached)", maxPendingConnections)
             sendGoodbye(conn, "another_server")
             conn.close(1000, "another_server")
             return
-        }
-        pendingConnTimeoutJob = scope.launch {
-            delay(pendingHelloTimeoutMs)
-            val timedOut: Boolean
-            synchronized(pendingLock) {
-                timedOut = pendingConn == conn
-                if (timedOut) pendingConn = null
-            }
-            if (timedOut) {
-                Timber.w("SendSpinServerHost: pending connection timed out, closing")
-                sendGoodbye(conn, "another_server")
-                conn.close(1000, "timeout")
-            }
         }
         try {
             val helloJson = client.buildClientHelloJson()
@@ -98,17 +98,16 @@ class SendSpinServerHost(
             conn.send(helloJson)
         } catch (e: Exception) {
             Timber.w(e, "SendSpinServerHost: failed to send client/hello, dropping pending connection")
-            pendingConnTimeoutJob?.cancel()
-            pendingConnTimeoutJob = null
-            synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
+            synchronized(pendingLock) { pendingConns.remove(conn) }?.cancel()
             conn.close(1000, "error")
         }
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
         Timber.d("SendSpinServerHost: << %s", message)
+        val isPending = synchronized(pendingLock) { pendingConns.containsKey(conn) }
         when {
-            conn == pendingConn -> {
+            isPending -> {
                 val msg = parser.parseText(message)
                 if (msg is ServerHello) {
                     resolveConnection(conn, msg)
@@ -116,7 +115,7 @@ class SendSpinServerHost(
                     Timber.w("SendSpinServerHost: pending connection sent non-hello message, closing")
                     sendGoodbye(conn, "another_server")
                     conn.close(1000, "another_server")
-                    synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
+                    synchronized(pendingLock) { pendingConns.remove(conn) }?.cancel()
                 }
             }
             conn == activeConn -> client.handleTextMessage(message)
@@ -134,19 +133,14 @@ class SendSpinServerHost(
 
     override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) {
         Timber.i("SendSpinServerHost: connection closed (%d %s)", code, reason)
-        when (conn) {
-            activeConn -> {
-                activeConn = null
-                activeReason = null
-                activeServerId = null
-                client.onServerSocketClosed(code, reason)
-            }
-            pendingConn -> {
-                pendingConnTimeoutJob?.cancel()
-                pendingConnTimeoutJob = null
-                synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
-            }
+        if (conn == activeConn) {
+            activeConn = null
+            activeReason = null
+            activeServerId = null
+            client.onServerSocketClosed(code, reason)
+            return
         }
+        synchronized(pendingLock) { pendingConns.remove(conn) }?.cancel()
     }
 
     override fun onError(conn: WebSocket?, ex: Exception) {
@@ -154,19 +148,18 @@ class SendSpinServerHost(
         if (conn == null) {
             serverReady.completeExceptionally(ex)
             started = false
-            pendingConnTimeoutJob?.cancel()
-            pendingConnTimeoutJob = null
-            synchronized(pendingLock) { pendingConn = null }
+            synchronized(pendingLock) {
+                pendingConns.values.forEach { it.cancel() }
+                pendingConns.clear()
+            }
         }
         if (conn == null || conn == activeConn) {
             activeConn = null
             activeReason = null
             activeServerId = null
             client.onServerSocketError(ex)
-        } else if (conn == pendingConn) {
-            pendingConnTimeoutJob?.cancel()
-            pendingConnTimeoutJob = null
-            synchronized(pendingLock) { if (pendingConn == conn) pendingConn = null }
+        } else {
+            synchronized(pendingLock) { pendingConns.remove(conn) }?.cancel()
         }
     }
 
@@ -184,8 +177,10 @@ class SendSpinServerHost(
 
     fun stopServer() {
         started = false
-        pendingConnTimeoutJob?.cancel()
-        pendingConnTimeoutJob = null
+        synchronized(pendingLock) {
+            pendingConns.values.forEach { it.cancel() }
+            pendingConns.clear()
+        }
         try {
             stop(0)
         } catch (ex: InterruptedException) {
@@ -197,8 +192,7 @@ class SendSpinServerHost(
     }
 
     private fun resolveConnection(newConn: WebSocket, newHello: ServerHello) {
-        pendingConnTimeoutJob?.cancel()
-        pendingConnTimeoutJob = null
+        synchronized(pendingLock) { pendingConns.remove(newConn) }?.cancel()
         val current = activeConn
         if (current == null) {
             activate(newConn, newHello)
@@ -225,7 +219,6 @@ class SendSpinServerHost(
                 activeServerId, newHello.name, newReason)
             sendGoodbye(newConn, "another_server")
             newConn.close(1000, "another_server")
-            synchronized(pendingLock) { if (pendingConn == newConn) pendingConn = null }
         }
     }
 
@@ -233,7 +226,6 @@ class SendSpinServerHost(
         activeConn = conn
         activeReason = hello.connectionReason
         activeServerId = hello.serverId
-        synchronized(pendingLock) { pendingConn = null }
         Timber.i("SendSpinServerHost: activating server '%s' (id=%s reason=%s)",
             hello.name, hello.serverId, hello.connectionReason)
         client.acceptIncomingConnection(JavaWebSocketAdapter(conn), hello)
@@ -250,5 +242,6 @@ class SendSpinServerHost(
     companion object {
         const val SERVER_PORT = 8928
         private const val PENDING_HELLO_TIMEOUT_MS = 5_000L
+        private const val MAX_PENDING_CONNECTIONS = 4
     }
 }

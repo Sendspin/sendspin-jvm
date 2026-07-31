@@ -6,6 +6,13 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.firstOrNull
 import com.sendspin.protocol.ProtocolLog as Timber
 
+/**
+ * A server found via mDNS, before any connection has been made.
+ *
+ * [name] is only a discovery-time hint (spec `## Establishing a Connection`): once a connection is
+ * established, the `server/hello` name is authoritative and may differ. Prefer
+ * [SendSpinClient.serverName] over this value once connected.
+ */
 data class DiscoveredServer(
     val name: String,
     val host: String,

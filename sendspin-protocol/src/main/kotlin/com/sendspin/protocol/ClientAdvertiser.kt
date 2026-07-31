@@ -17,6 +17,11 @@ import com.sendspin.protocol.ProtocolLog as Timber
  */
 class ClientAdvertiser(private val registrar: NsdRegistrar) {
 
+    /**
+     * [name] SHOULD match the `name` passed as `clientName` to [SendSpinClient] (spec
+     * `## Establishing a Connection`): it is only a discovery-time hint, and the `client/hello`
+     * value wins if a server ever sees the two differ.
+     */
     fun advertise(
         port: Int,
         name: String,
