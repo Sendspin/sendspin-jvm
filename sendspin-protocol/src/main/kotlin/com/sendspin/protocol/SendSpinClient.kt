@@ -741,13 +741,19 @@ class SendSpinClient(
     // ── Periodic client/state ─────────────────────────────────────────────────
 
     private fun sendClientState() {
-        val player = PlayerStatePayload(
-            volume = playerVolume,
-            muted = playerMuted,
-            staticDelayMs = staticDelayMs,
-            requiredLeadTimeMs = requiredLeadTimeMs,
-            minBufferMs = minBufferMs,
-        )
+        val activeRoles = _serverHello.value?.activeRoles
+        val playerActive = activeRoles == null || activeRoles.any { it == "player@v1" || it == "player" }
+        val player = if (playerActive) {
+            PlayerStatePayload(
+                volume = playerVolume,
+                muted = playerMuted,
+                staticDelayMs = staticDelayMs,
+                requiredLeadTimeMs = requiredLeadTimeMs,
+                minBufferMs = minBufferMs,
+            )
+        } else {
+            null
+        }
         ws?.send(clientStateMsgAdapter.toJson(ClientStateMsg(payload = ClientStateMsgPayload(player = player))))
     }
 
