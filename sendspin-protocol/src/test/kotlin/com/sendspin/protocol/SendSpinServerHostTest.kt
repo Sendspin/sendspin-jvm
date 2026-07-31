@@ -109,4 +109,55 @@ class SendSpinServerHostTest {
         verify { newConn.close(1000, "another_server") }
         verify(exactly = 0) { currentConn.close(any(), any<String>()) }
     }
+
+    @Test
+    fun `a connection beyond the pending cap is rejected without waiting for its hello`() {
+        host = SendSpinServerHost(
+            client = client,
+            moshi = moshi,
+            getLastPlayedServerId = { lastPlayedServerId },
+            port = 0,
+            scope = CoroutineScope(SupervisorJob()),
+            pendingHelloTimeoutMs = Long.MAX_VALUE,
+            maxPendingConnections = 2,
+        )
+
+        // Two connections open but neither has sent server/hello yet, filling the cap.
+        val first = mockConn()
+        val second = mockConn()
+        host.onOpen(first, handshake)
+        host.onOpen(second, handshake)
+
+        // A third arrives while the cap is full: rejected immediately, before even receiving
+        // (or waiting for) its server/hello.
+        val third = mockConn()
+        host.onOpen(third, handshake)
+
+        verify { third.close(1000, "another_server") }
+        verify(exactly = 0) { first.close(any(), any<String>()) }
+        verify(exactly = 0) { second.close(any(), any<String>()) }
+    }
+
+    @Test
+    fun `a pending connection resolving frees a cap slot for the next one`() {
+        host = SendSpinServerHost(
+            client = client,
+            moshi = moshi,
+            getLastPlayedServerId = { lastPlayedServerId },
+            port = 0,
+            scope = CoroutineScope(SupervisorJob()),
+            pendingHelloTimeoutMs = Long.MAX_VALUE,
+            maxPendingConnections = 1,
+        )
+
+        val first = mockConn()
+        connectAndActivate(first, "server-a", "discovery")
+
+        // The cap slot freed once `first` resolved (into the active connection), so a second
+        // pending connection is now accepted rather than rejected outright.
+        val second = mockConn()
+        host.onOpen(second, handshake)
+
+        verify(exactly = 0) { second.close(any(), any<String>()) }
+    }
 }
