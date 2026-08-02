@@ -217,6 +217,45 @@ class ClockSyncTest {
         )
     }
 
+    @Test
+    fun `reset clears filter state so a new session re-seeds from its own server clock`() {
+        // The seeded guard only protects the very first measurement ever. A long-lived ClockSync
+        // reused across a reconnect to a *different* server clock would otherwise replay the seeding
+        // bug through predict()+update(). reset() must restore the pre-measurement prior — including
+        // the seeded flag — so the next session seeds cleanly from its own offset.
+        val rtt = 4_000L
+
+        // Session A: converge on a large server offset.
+        val offsetA = 3_452_369_038_000L
+        val baseA = ClockSync.localMicros() + 1_000_000L
+        repeat(20) {
+            val t1 = baseA + it * 10_000_000L
+            clockSync.processMeasurement(t1, t1 + offsetA + rtt / 2, t1 + offsetA + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+        assertTrue("precondition: session A converged", clockSync.offsetMicros != 0L)
+
+        clockSync.reset()
+        assertEquals("reset must return offset to the zero prior", 0L, clockSync.offsetMicros)
+
+        // Session B: a wildly different server clock (negative, ~1e12 µs behind). Without reset this
+        // is the replayed-failure scenario; with it, the first post-reset sample re-seeds directly.
+        val offsetB = -1_000_000_000_000L
+        val baseB = ClockSync.localMicros() + 1_000_000L
+        repeat(20) {
+            val t1 = baseB + it * 10_000_000L
+            clockSync.processMeasurement(t1, t1 + offsetB + rtt / 2, t1 + offsetB + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+
+        assertTrue(
+            "Offset should track session B's ${offsetB} µs clock, was ${clockSync.lastOffsetMicros}",
+            kotlin.math.abs(clockSync.lastOffsetMicros - offsetB) < 10_000.0,
+        )
+        assertTrue(
+            "Drift must stay physically plausible after reset, was ${clockSync.lastDriftPpm} ppm",
+            kotlin.math.abs(clockSync.lastDriftPpm) < 1_000.0,
+        )
+    }
+
     // ── toLocalMicros drift gate ──────────────────────────────────────────────
 
     @Test
