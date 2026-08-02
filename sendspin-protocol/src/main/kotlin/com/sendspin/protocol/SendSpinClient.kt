@@ -825,6 +825,7 @@ class SendSpinClient(
         _artistArtwork.value = null
         firstAudioChunkLogged = false
         firstMeasurementCompleted = false
+        clockSync.reset()   // drop stale Kalman state so the next session re-seeds from its own server clock
         burstReplies.clear()
     }
 

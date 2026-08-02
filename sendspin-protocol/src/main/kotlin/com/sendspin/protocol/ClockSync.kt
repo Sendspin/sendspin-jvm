@@ -29,14 +29,18 @@ class ClockSync {
     private var xDrift = 0.0    // µs/µs (≈ ppm / 1_000_000)
 
     // Covariance matrix P  (2×2, stored as four doubles: p00, p01, p10, p11)
-    private var p00 = 1e12; private var p01 = 0.0
-    private var p10 = 0.0;  private var p11 = 1e-6
+    private var p00 = INITIAL_OFFSET_VARIANCE; private var p01 = 0.0
+    private var p10 = 0.0;                     private var p11 = INITIAL_DRIFT_VARIANCE
 
     // Timestamp of the last Kalman prediction step (µs, local clock)
     private var lastPredictTimeMicros: Long = localMicros()
 
     // Sample counter — adaptive forgetting only activates after min_samples
     private var sampleCount = 0
+
+    // First-measurement seeding guard. The initial sample initialises the filter state directly
+    // instead of being absorbed as an innovation (see [processMeasurement]).
+    private var seeded = false
 
     // ── Filter constants (reference recommended values) ───────────────────────
 
@@ -83,8 +87,25 @@ class ClockSync {
 
         synchronized(lock) {
             lastRttMicros = rtt
-            predict(t4)
-            update(offsetEstimate, measurementVariance)
+            if (!seeded) {
+                // Seed the filter directly from the first measurement instead of letting update()
+                // absorb it. Starting xOffset at 0 makes the first innovation the entire offset
+                // (~10^12 µs against a server monotonic clock). The first predict() grows the
+                // cross-covariance p10 = dt·p11, so update()'s drift gain k1 = p10/s is no longer
+                // zero and leaks that huge innovation into xDrift (several µs/µs) — which every
+                // later predict() extrapolates into tens of seconds of offset error. Seeding keeps
+                // innovations small from the first sample on.
+                seeded = true
+                xOffset = offsetEstimate
+                xDrift = 0.0
+                lastPredictTimeMicros = t4
+                p00 = measurementVariance.coerceAtLeast(1.0)
+                sampleCount++   // the seed consumes a sample; keep the forgetting threshold aligned
+            } else {
+                predict(t4)
+                update(offsetEstimate, measurementVariance)
+            }
+            // xDrift == 0.0 on the seed path, so both diagnostics assignments are branch-independent.
             lastOffsetMicros = xOffset
             lastDriftPpm = xDrift * 1_000_000.0
         }
@@ -111,6 +132,27 @@ class ClockSync {
 
     /** Current best estimate of the clock offset in microseconds (server − local). */
     val offsetMicros: Long get() = synchronized(lock) { xOffset.toLong() }
+
+    /**
+     * Discard all filter state and return to the pre-measurement prior.
+     *
+     * Call when the sync session restarts against a possibly-different server clock (a reconnect, or a
+     * new SERVER_INITIATED socket): the next measurement re-seeds the filter from scratch instead of
+     * dragging a stale offset/drift into the new session. Without this, the [seeded] guard only
+     * protects the very first measurement ever, so a later session against an unrelated server clock
+     * would replay the seeding bug through the normal predict()/update() path.
+     */
+    fun reset() {
+        synchronized(lock) {
+            xOffset = 0.0; xDrift = 0.0
+            p00 = INITIAL_OFFSET_VARIANCE; p01 = 0.0
+            p10 = 0.0;                     p11 = INITIAL_DRIFT_VARIANCE
+            lastPredictTimeMicros = localMicros()
+            sampleCount = 0
+            seeded = false
+            lastOffsetMicros = 0.0; lastDriftPpm = 0.0; lastRttMicros = 0L
+        }
+    }
 
     // ── Kalman internals ─────────────────────────────────────────────────────
 
@@ -163,6 +205,12 @@ class ClockSync {
     }
 
     companion object {
+        // Initial covariance prior (also restored by [reset]). Offset starts effectively unknown
+        // (1e12 µs² variance); drift starts near-certain-zero (1e-6). Kept as constants so the
+        // construction prior and reset() cannot silently diverge.
+        private const val INITIAL_OFFSET_VARIANCE = 1e12
+        private const val INITIAL_DRIFT_VARIANCE = 1e-6
+
         fun localMicros(): Long = System.nanoTime() / 1_000L
 
         /**

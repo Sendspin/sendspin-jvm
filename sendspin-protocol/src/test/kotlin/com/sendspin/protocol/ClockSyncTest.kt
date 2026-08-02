@@ -157,29 +157,102 @@ class ClockSyncTest {
     }
 
     @Test
-    fun `low RTT sample converges faster than high RTT sample`() {
-        // R = (rtt/4)^2, so a lower-RTT sample carries more weight. After the same number
-        // of identical-offset probes, the low-RTT filter should be closer to the truth.
-        val lowRttClock  = ClockSync()
-        val highRttClock = ClockSync()
+    fun `low RTT outlier perturbs estimate more than high RTT outlier`() {
+        // Replaces the old "low RTT converges faster" test, which relied on the pre-seed startup
+        // transient: it fed noiseless probes where offsetEstimate == trueOffset exactly and only
+        // "passed" because starting from xOffset=0 left an RTT-dependent residual. With correct
+        // first-measurement seeding both filters lock onto a noiseless probe immediately, so
+        // convergence speed is no longer RTT-dependent. The genuine RTT-weighting property
+        // R = (rtt/4)² still holds and is exercised here: a low-RTT *outlier* is trusted more, so
+        // it drags the estimate further off the truth than an equal-magnitude high-RTT outlier.
         val trueOffset = 40_000L
-        val lowRtt  = 1_000L   // R = (250µs)^2
-        val highRtt = 8_000L   // R = (2000µs)^2 — 64× larger, so much less confident
+        fun seed(c: ClockSync) {
+            val t1 = 1_000_000L; val rtt = 1_000L
+            c.processMeasurement(t1, t1 + trueOffset + rtt / 2, t1 + trueOffset + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+        fun outlier(c: ClockSync, rtt: Long) {
+            val t1 = 1_200_000L; val noise = 10_000L
+            c.processMeasurement(t1, t1 + trueOffset + noise + rtt / 2, t1 + trueOffset + noise + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+        val low  = ClockSync().also { seed(it); outlier(it, 1_000L) }
+        val high = ClockSync().also { seed(it); outlier(it, 20_000L) }
 
-        repeat(5) {
-            val t1 = 1_000_000L + it * 100_000L
-            fun probe(rtt: Long) = Triple(t1 + trueOffset + rtt / 2, t1 + trueOffset + rtt / 2 + 50L, t1 + rtt + 50L)
-            val (t2l, t3l, t4l) = probe(lowRtt)
-            val (t2h, t3h, t4h) = probe(highRtt)
-            lowRttClock.processMeasurement(t1, t2l, t3l, t4l)
-            highRttClock.processMeasurement(t1, t2h, t3h, t4h)
+        val lowError  = kotlin.math.abs(low.lastOffsetMicros  - trueOffset)
+        val highError = kotlin.math.abs(high.lastOffsetMicros - trueOffset)
+        assertTrue(
+            "Low-RTT outlier (error=$lowError µs) should perturb the estimate more than high-RTT (error=$highError µs)",
+            lowError > highError,
+        )
+    }
+
+    @Test
+    fun `offset stays accurate and drift stays sane with realistic server clock offset`() {
+        // Regression for the first-measurement seeding bug. Against a real server whose monotonic
+        // clock sits ~3.45e12 µs ahead, the old predict()+update() path leaked the entire offset
+        // into the drift state on the first sample, so drift blew up to millions of ppm and every
+        // subsequent predict() threw the offset off by tens of seconds.
+        //
+        // Client timestamps are based on the real local clock the filter was constructed against
+        // (as the live client's are), so the first predict() sees a genuine positive dt — the
+        // on-device trigger condition. A fixed t1 unrelated to System.nanoTime() would be coerced
+        // to dt=0 on any machine whose uptime exceeds it, silently hiding the bug.
+        val trueOffset = 3_452_369_038_000L // ~3.45e12 µs — a real server monotonic clock
+        val rtt = 4_000L
+        val base = ClockSync.localMicros() + 1_000_000L // ~1 s after construction → dt > 0
+        repeat(20) {
+            val t1 = base + it * 10_000_000L // 10 s apart — sparse, like real probe bursts
+            val t2 = t1 + trueOffset + rtt / 2
+            val t3 = t2 + 50L
+            val t4 = t1 + rtt + 50L
+            clockSync.processMeasurement(t1, t2, t3, t4)
         }
 
-        val lowRttError  = kotlin.math.abs(lowRttClock.lastOffsetMicros  - trueOffset)
-        val highRttError = kotlin.math.abs(highRttClock.lastOffsetMicros - trueOffset)
         assertTrue(
-            "Low-RTT filter (error=$lowRttError µs) should converge faster than high-RTT (error=$highRttError µs)",
-            lowRttError < highRttError,
+            "Offset should track the true ~3.45e12 µs server clock, was ${clockSync.lastOffsetMicros}",
+            kotlin.math.abs(clockSync.lastOffsetMicros - trueOffset) < 10_000.0,
+        )
+        assertTrue(
+            "Drift must stay physically plausible, was ${clockSync.lastDriftPpm} ppm",
+            kotlin.math.abs(clockSync.lastDriftPpm) < 1_000.0,
+        )
+    }
+
+    @Test
+    fun `reset clears filter state so a new session re-seeds from its own server clock`() {
+        // The seeded guard only protects the very first measurement ever. A long-lived ClockSync
+        // reused across a reconnect to a *different* server clock would otherwise replay the seeding
+        // bug through predict()+update(). reset() must restore the pre-measurement prior — including
+        // the seeded flag — so the next session seeds cleanly from its own offset.
+        val rtt = 4_000L
+
+        // Session A: converge on a large server offset.
+        val offsetA = 3_452_369_038_000L
+        val baseA = ClockSync.localMicros() + 1_000_000L
+        repeat(20) {
+            val t1 = baseA + it * 10_000_000L
+            clockSync.processMeasurement(t1, t1 + offsetA + rtt / 2, t1 + offsetA + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+        assertTrue("precondition: session A converged", clockSync.offsetMicros != 0L)
+
+        clockSync.reset()
+        assertEquals("reset must return offset to the zero prior", 0L, clockSync.offsetMicros)
+
+        // Session B: a wildly different server clock (negative, ~1e12 µs behind). Without reset this
+        // is the replayed-failure scenario; with it, the first post-reset sample re-seeds directly.
+        val offsetB = -1_000_000_000_000L
+        val baseB = ClockSync.localMicros() + 1_000_000L
+        repeat(20) {
+            val t1 = baseB + it * 10_000_000L
+            clockSync.processMeasurement(t1, t1 + offsetB + rtt / 2, t1 + offsetB + rtt / 2 + 50L, t1 + rtt + 50L)
+        }
+
+        assertTrue(
+            "Offset should track session B's ${offsetB} µs clock, was ${clockSync.lastOffsetMicros}",
+            kotlin.math.abs(clockSync.lastOffsetMicros - offsetB) < 10_000.0,
+        )
+        assertTrue(
+            "Drift must stay physically plausible after reset, was ${clockSync.lastDriftPpm} ppm",
+            kotlin.math.abs(clockSync.lastDriftPpm) < 1_000.0,
         )
     }
 
