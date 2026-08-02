@@ -206,6 +206,60 @@ class SendSpinClientHelloTest {
     }
 
     @Test
+    fun `advertiseOptionalRoles=false advertises only player@v1 and omits optional support blocks`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                advertiseOptionalRoles = false,
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals("only player@v1 should be advertised", listOf("player@v1"), payload.supportedRoles)
+        assertNotNull("player@v1_support must remain", payload.playerSupport)
+        assertNull("metadata support should be omitted", payload.metadataSupport)
+        assertNull("artwork support should be omitted", payload.artworkSupport)
+        assertNull("controller support should be omitted", payload.controllerSupport)
+        assertNull("color support should be omitted", payload.colorSupport)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `advertiseOptionalRoles defaults to true and advertises the optional roles`() {
+        val payload = parseHello(buildClient().buildClientHelloJson()).payload
+        assertTrue(
+            "optional roles missing under default preferences",
+            payload.supportedRoles.containsAll(
+                listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
+            ),
+        )
+        assertNotNull(payload.metadataSupport)
+        assertNotNull(payload.artworkSupport)
+        assertNotNull(payload.controllerSupport)
+        assertNotNull(payload.colorSupport)
+    }
+
+    @Test
+    fun `player support advertises buffer_capacity and supported_commands from preferences`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                playerBufferCapacity = 524288,
+                playerSupportedCommands = listOf("volume", "mute", "seek"),
+            ),
+        ).buildClientHelloJson()
+        val support = parseHello(json).payload.playerSupport!!
+        assertEquals(524288, support.bufferCapacity)
+        assertEquals(listOf("volume", "mute", "seek"), support.supportedCommands)
+    }
+
+    @Test
+    fun `player support defaults preserve buffer_capacity and volume-mute commands`() {
+        val support = parseHello(buildClient().buildClientHelloJson()).payload.playerSupport!!
+        assertEquals(262144, support.bufferCapacity)
+        assertEquals(listOf("volume", "mute"), support.supportedCommands)
+    }
+
+    @Test
     fun `buildClientHelloJson advertises exactly FLAC, Opus, PCM at 48kHz 16-bit in that order`() {
         val json = buildClient().buildClientHelloJson()
 

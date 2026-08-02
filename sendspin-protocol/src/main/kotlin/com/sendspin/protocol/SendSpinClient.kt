@@ -62,6 +62,16 @@ data class ClientPreferences(
     val supportedFormats: List<AudioFormat>,
     val artworkChannels: List<ArtworkChannel>,
     val visualizerSupport: VisualizerSupport? = null,
+    /** Advertised `player@v1_support.buffer_capacity`. Defaults match [PlayerSupport]. */
+    val playerBufferCapacity: Int = 262144,
+    /** Advertised `player@v1_support.supported_commands`. Defaults match [PlayerSupport]. */
+    val playerSupportedCommands: List<String> = listOf("volume", "mute"),
+    /**
+     * When false, `client/hello` advertises only the mandatory `player@v1` role and omits the
+     * optional metadata/artwork/controller/color/visualizer roles and their `*_support` blocks.
+     * Some servers reject a hello carrying roles they don't expect; leave true otherwise.
+     */
+    val advertiseOptionalRoles: Boolean = true,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -674,9 +684,13 @@ class SendSpinClient(
     // ── Hello ─────────────────────────────────────────────────────────────────
 
     private fun buildClientHello(): ClientHello {
+        val optional = preferences.advertiseOptionalRoles
         val roles = buildList {
-            add("player@v1"); add("metadata@v1"); add("artwork@v1"); add("controller@v1"); add("color@v1")
-            if (preferences.visualizerSupport != null) add("visualizer@v1")
+            add("player@v1")
+            if (optional) {
+                add("metadata@v1"); add("artwork@v1"); add("controller@v1"); add("color@v1")
+                if (preferences.visualizerSupport != null) add("visualizer@v1")
+            }
         }
         return ClientHello(
             payload = ClientHelloPayload(
@@ -685,12 +699,16 @@ class SendSpinClient(
                 deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
                 macAddress = macAddress,
                 supportedRoles = roles,
-                playerSupport = PlayerSupport(supportedFormats = preferences.supportedFormats),
-                metadataSupport = MetadataSupport(),
-                artworkSupport = ArtworkSupport(channels = preferences.artworkChannels),
-                controllerSupport = ControllerSupport(),
-                colorSupport = ColorSupport(),
-                visualizerSupport = preferences.visualizerSupport,
+                playerSupport = PlayerSupport(
+                    supportedFormats = preferences.supportedFormats,
+                    bufferCapacity = preferences.playerBufferCapacity,
+                    supportedCommands = preferences.playerSupportedCommands,
+                ),
+                metadataSupport = if (optional) MetadataSupport() else null,
+                artworkSupport = if (optional) ArtworkSupport(channels = preferences.artworkChannels) else null,
+                controllerSupport = if (optional) ControllerSupport() else null,
+                colorSupport = if (optional) ColorSupport() else null,
+                visualizerSupport = if (optional) preferences.visualizerSupport else null,
             )
         )
     }
