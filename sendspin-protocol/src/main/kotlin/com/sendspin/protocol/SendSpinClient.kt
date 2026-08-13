@@ -45,6 +45,15 @@ data class DiagnosticsSnapshot(
     val isAudioPlaying: Boolean = false,
 )
 
+/** Optional `client/hello` roles a host can advertise. `player@v1` is mandatory and not listed. */
+enum class OptionalRole(val roleName: String) {
+    METADATA("metadata@v1"),
+    ARTWORK("artwork@v1"),
+    CONTROLLER("controller@v1"),
+    COLOR("color@v1"),
+    VISUALIZER("visualizer@v1"),
+}
+
 /**
  * Core SendSpin WebSocket client.
  *
@@ -67,11 +76,13 @@ data class ClientPreferences(
     /** Advertised `player@v1_support.supported_commands`. Defaults match [PlayerSupport]. */
     val playerSupportedCommands: List<String> = listOf("volume", "mute"),
     /**
-     * When false, `client/hello` advertises only the mandatory `player@v1` role and omits the
-     * optional metadata/artwork/controller/color/visualizer roles and their `*_support` blocks.
-     * Some servers reject a hello carrying roles they don't expect; leave true otherwise.
+     * Optional roles to advertise in `client/hello`. A role that is absent here is omitted from
+     * `supported_roles` together with its `*_support` block; `player@v1` is always advertised.
+     * Defaults to every optional role — reduce the set for a host that implements only a subset,
+     * or for a server that rejects a hello carrying roles it doesn't expect.
+     * [OptionalRole.VISUALIZER] also needs a non-null [visualizerSupport] to take effect.
      */
-    val advertiseOptionalRoles: Boolean = true,
+    val supportedOptionalRoles: Set<OptionalRole> = OptionalRole.entries.toSet(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -683,14 +694,16 @@ class SendSpinClient(
 
     // ── Hello ─────────────────────────────────────────────────────────────────
 
+    /** VISUALIZER needs both signals to agree: the role opt-in and a non-null support block. */
+    private fun advertises(role: OptionalRole): Boolean =
+        role in preferences.supportedOptionalRoles &&
+            (role != OptionalRole.VISUALIZER || preferences.visualizerSupport != null)
+
     private fun buildClientHello(): ClientHello {
-        val optional = preferences.advertiseOptionalRoles
+        // Iterate the enum, not the caller's Set, so wire order stays deterministic.
         val roles = buildList {
             add("player@v1")
-            if (optional) {
-                add("metadata@v1"); add("artwork@v1"); add("controller@v1"); add("color@v1")
-                if (preferences.visualizerSupport != null) add("visualizer@v1")
-            }
+            OptionalRole.entries.filter { advertises(it) }.mapTo(this) { it.roleName }
         }
         return ClientHello(
             payload = ClientHelloPayload(
@@ -704,11 +717,13 @@ class SendSpinClient(
                     bufferCapacity = preferences.playerBufferCapacity,
                     supportedCommands = preferences.playerSupportedCommands,
                 ),
-                metadataSupport = if (optional) MetadataSupport() else null,
-                artworkSupport = if (optional) ArtworkSupport(channels = preferences.artworkChannels) else null,
-                controllerSupport = if (optional) ControllerSupport() else null,
-                colorSupport = if (optional) ColorSupport() else null,
-                visualizerSupport = if (optional) preferences.visualizerSupport else null,
+                metadataSupport = if (advertises(OptionalRole.METADATA)) MetadataSupport() else null,
+                artworkSupport = if (advertises(OptionalRole.ARTWORK)) {
+                    ArtworkSupport(channels = preferences.artworkChannels)
+                } else null,
+                controllerSupport = if (advertises(OptionalRole.CONTROLLER)) ControllerSupport() else null,
+                colorSupport = if (advertises(OptionalRole.COLOR)) ColorSupport() else null,
+                visualizerSupport = preferences.visualizerSupport.takeIf { advertises(OptionalRole.VISUALIZER) },
             )
         )
     }

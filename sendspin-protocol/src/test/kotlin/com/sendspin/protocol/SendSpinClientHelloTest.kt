@@ -206,11 +206,11 @@ class SendSpinClientHelloTest {
     }
 
     @Test
-    fun `advertiseOptionalRoles=false advertises only player@v1 and omits optional support blocks`() {
+    fun `empty supportedOptionalRoles advertises only player@v1 and omits optional support blocks`() {
         val json = buildClient(
             preferences = defaultPreferences.copy(
                 visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
-                advertiseOptionalRoles = false,
+                supportedOptionalRoles = emptySet(),
             ),
         ).buildClientHelloJson()
         val payload = parseHello(json).payload
@@ -225,7 +225,7 @@ class SendSpinClientHelloTest {
     }
 
     @Test
-    fun `advertiseOptionalRoles defaults to true and advertises the optional roles`() {
+    fun `supportedOptionalRoles defaults to the full set and advertises the optional roles`() {
         val payload = parseHello(buildClient().buildClientHelloJson()).payload
         assertTrue(
             "optional roles missing under default preferences",
@@ -237,6 +237,54 @@ class SendSpinClientHelloTest {
         assertNotNull(payload.artworkSupport)
         assertNotNull(payload.controllerSupport)
         assertNotNull(payload.colorSupport)
+    }
+
+    @Test
+    fun `supportedOptionalRoles advertises only the selected subset in enum order`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER, OptionalRole.METADATA),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(
+            listOf("player@v1", "metadata@v1", "controller@v1"),
+            payload.supportedRoles,
+        )
+        assertNotNull("metadata support should be advertised", payload.metadataSupport)
+        assertNotNull("controller support should be advertised", payload.controllerSupport)
+        assertNull("artwork support should be omitted", payload.artworkSupport)
+        assertNull("color support should be omitted", payload.colorSupport)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `VISUALIZER in supportedOptionalRoles without visualizerSupport omits the role`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = null,
+                supportedOptionalRoles = setOf(OptionalRole.VISUALIZER),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals("only player@v1 should be advertised", listOf("player@v1"), payload.supportedRoles)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `visualizerSupport without VISUALIZER in supportedOptionalRoles omits the role`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                supportedOptionalRoles = setOf(OptionalRole.METADATA),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(listOf("player@v1", "metadata@v1"), payload.supportedRoles)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
     }
 
     @Test
