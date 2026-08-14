@@ -45,8 +45,13 @@ data class DiagnosticsSnapshot(
     val isAudioPlaying: Boolean = false,
 )
 
-/** Optional `client/hello` roles a host can advertise. `player@v1` is mandatory and not listed. */
+/**
+ * Roles a host can advertise in `client/hello`. The spec makes every role conditional, including
+ * `player@v1`, so a controller-only or metadata-only host can leave [PLAYER] out.
+ * Declaration order is the wire order of `supported_roles`.
+ */
 enum class OptionalRole(val roleName: String) {
+    PLAYER("player@v1"),
     METADATA("metadata@v1"),
     ARTWORK("artwork@v1"),
     CONTROLLER("controller@v1"),
@@ -76,11 +81,12 @@ data class ClientPreferences(
     /** Advertised `player@v1_support.supported_commands`. Defaults match [PlayerSupport]. */
     val playerSupportedCommands: List<String> = listOf("volume", "mute"),
     /**
-     * Optional roles to advertise in `client/hello`. A role that is absent here is omitted from
-     * `supported_roles` together with its `*_support` block; `player@v1` is always advertised.
-     * Defaults to every optional role — reduce the set for a host that implements only a subset,
+     * Roles to advertise in `client/hello`. A role that is absent here is omitted from
+     * `supported_roles` together with its `*_support` block.
+     * Defaults to every role — reduce the set for a host that implements only a subset,
      * or for a server that rejects a hello carrying roles it doesn't expect.
-     * [OptionalRole.VISUALIZER] also needs a non-null [visualizerSupport] to take effect.
+     * [OptionalRole.PLAYER] also needs a `SendSpinClient` audioPlayerFactory, and
+     * [OptionalRole.VISUALIZER] a non-null [visualizerSupport], to take effect.
      */
     val supportedOptionalRoles: Set<OptionalRole> = OptionalRole.entries.toSet(),
 )
@@ -96,14 +102,20 @@ class SendSpinClient(
     private val productName: String,
     private val softwareVersion: String,
     private val macAddress: String? = null,
-    audioPlayerFactory: (AudioBuffer, ClockSync) -> AudioPlayer,
+    /** Omit only for a host that leaves [OptionalRole.PLAYER] out of its preferences. */
+    audioPlayerFactory: ((AudioBuffer, ClockSync) -> AudioPlayer)? = null,
     /** Set to false to prevent automatic reconnection on disconnect (e.g. in conformance tests). */
     private val reconnectEnabled: Boolean = true,
     private val settingsStore: ClientSettingsStore = NoOpClientSettingsStore,
 ) {
     val clockSync = ClockSync()
     val audioBuffer = AudioBuffer(clockSync)
-    val audioPlayer: AudioPlayer = audioPlayerFactory(audioBuffer, clockSync)
+    val audioPlayer: AudioPlayer = audioPlayerFactory?.invoke(audioBuffer, clockSync) ?: run {
+        require(OptionalRole.PLAYER !in preferences.supportedOptionalRoles) {
+            "player@v1 is in supportedOptionalRoles but no audioPlayerFactory was provided"
+        }
+        NoOpAudioPlayer
+    }
 
     private val parser = MessageParser(moshi)
     private val clientHelloAdapter    = moshi.adapter(ClientHello::class.java)
@@ -701,10 +713,7 @@ class SendSpinClient(
 
     private fun buildClientHello(): ClientHello {
         // Iterate the enum, not the caller's Set, so wire order stays deterministic.
-        val roles = buildList {
-            add("player@v1")
-            OptionalRole.entries.filter { advertises(it) }.mapTo(this) { it.roleName }
-        }
+        val roles = OptionalRole.entries.filter { advertises(it) }.map { it.roleName }
         return ClientHello(
             payload = ClientHelloPayload(
                 clientId = clientId,
@@ -712,11 +721,13 @@ class SendSpinClient(
                 deviceInfo = DeviceInfo(manufacturer, productName, softwareVersion),
                 macAddress = macAddress,
                 supportedRoles = roles,
-                playerSupport = PlayerSupport(
-                    supportedFormats = preferences.supportedFormats,
-                    bufferCapacity = preferences.playerBufferCapacity,
-                    supportedCommands = preferences.playerSupportedCommands,
-                ),
+                playerSupport = if (advertises(OptionalRole.PLAYER)) {
+                    PlayerSupport(
+                        supportedFormats = preferences.supportedFormats,
+                        bufferCapacity = preferences.playerBufferCapacity,
+                        supportedCommands = preferences.playerSupportedCommands,
+                    )
+                } else null,
                 metadataSupport = if (advertises(OptionalRole.METADATA)) MetadataSupport() else null,
                 artworkSupport = if (advertises(OptionalRole.ARTWORK)) {
                     ArtworkSupport(channels = preferences.artworkChannels)
@@ -775,7 +786,10 @@ class SendSpinClient(
 
     private fun sendClientState() {
         val activeRoles = _serverHello.value?.activeRoles
-        val playerActive = activeRoles == null || activeRoles.any { it == "player@v1" || it == "player" }
+        // activeRoles is null before the server hello, when the volume/mute/delay setters can
+        // already report state — so gate on our own advertisement too.
+        val playerActive = advertises(OptionalRole.PLAYER) &&
+            (activeRoles == null || activeRoles.any { it == "player@v1" || it == "player" })
         val player = if (playerActive) {
             PlayerStatePayload(
                 volume = playerVolume,

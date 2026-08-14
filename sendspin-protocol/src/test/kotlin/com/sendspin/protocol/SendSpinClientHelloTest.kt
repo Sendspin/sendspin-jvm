@@ -6,6 +6,7 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,6 +51,7 @@ class SendSpinClientHelloTest {
         macAddress: String? = null,
         preferences: ClientPreferences = defaultPreferences,
         settingsStore: ClientSettingsStore = NoOpClientSettingsStore,
+        audioPlayerFactory: ((AudioBuffer, ClockSync) -> AudioPlayer)? = noOpPlayerFactory,
     ) = SendSpinClient(
         okHttpClient = OkHttpClient.Builder().build(),
         moshi = moshi,
@@ -60,7 +62,7 @@ class SendSpinClientHelloTest {
         productName = productName,
         softwareVersion = softwareVersion,
         macAddress = macAddress,
-        audioPlayerFactory = noOpPlayerFactory,
+        audioPlayerFactory = audioPlayerFactory,
         settingsStore = settingsStore,
     )
 
@@ -206,7 +208,7 @@ class SendSpinClientHelloTest {
     }
 
     @Test
-    fun `empty supportedOptionalRoles advertises only player@v1 and omits optional support blocks`() {
+    fun `empty supportedOptionalRoles advertises no role and omits every support block`() {
         val json = buildClient(
             preferences = defaultPreferences.copy(
                 visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
@@ -215,8 +217,8 @@ class SendSpinClientHelloTest {
         ).buildClientHelloJson()
         val payload = parseHello(json).payload
 
-        assertEquals("only player@v1 should be advertised", listOf("player@v1"), payload.supportedRoles)
-        assertNotNull("player@v1_support must remain", payload.playerSupport)
+        assertEquals("no role should be advertised", emptyList<String>(), payload.supportedRoles)
+        assertNull("player support should be omitted", payload.playerSupport)
         assertNull("metadata support should be omitted", payload.metadataSupport)
         assertNull("artwork support should be omitted", payload.artworkSupport)
         assertNull("controller support should be omitted", payload.controllerSupport)
@@ -227,12 +229,12 @@ class SendSpinClientHelloTest {
     @Test
     fun `supportedOptionalRoles defaults to the full set and advertises the optional roles`() {
         val payload = parseHello(buildClient().buildClientHelloJson()).payload
-        assertTrue(
-            "optional roles missing under default preferences",
-            payload.supportedRoles.containsAll(
-                listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
-            ),
+        assertEquals(
+            "default hello wire output must not move",
+            listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
+            payload.supportedRoles,
         )
+        assertNotNull(payload.playerSupport)
         assertNotNull(payload.metadataSupport)
         assertNotNull(payload.artworkSupport)
         assertNotNull(payload.controllerSupport)
@@ -249,11 +251,12 @@ class SendSpinClientHelloTest {
         val payload = parseHello(json).payload
 
         assertEquals(
-            listOf("player@v1", "metadata@v1", "controller@v1"),
+            listOf("metadata@v1", "controller@v1"),
             payload.supportedRoles,
         )
         assertNotNull("metadata support should be advertised", payload.metadataSupport)
         assertNotNull("controller support should be advertised", payload.controllerSupport)
+        assertNull("player support should be omitted", payload.playerSupport)
         assertNull("artwork support should be omitted", payload.artworkSupport)
         assertNull("color support should be omitted", payload.colorSupport)
         assertNull("visualizer support should be omitted", payload.visualizerSupport)
@@ -269,7 +272,7 @@ class SendSpinClientHelloTest {
         ).buildClientHelloJson()
         val payload = parseHello(json).payload
 
-        assertEquals("only player@v1 should be advertised", listOf("player@v1"), payload.supportedRoles)
+        assertEquals("no role should be advertised", emptyList<String>(), payload.supportedRoles)
         assertNull("visualizer support should be omitted", payload.visualizerSupport)
     }
 
@@ -283,8 +286,44 @@ class SendSpinClientHelloTest {
         ).buildClientHelloJson()
         val payload = parseHello(json).payload
 
-        assertEquals(listOf("player@v1", "metadata@v1"), payload.supportedRoles)
+        assertEquals(listOf("metadata@v1"), payload.supportedRoles)
         assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `PLAYER absent from supportedOptionalRoles omits player@v1 and its support block`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(listOf("controller@v1"), payload.supportedRoles)
+        assertNull("player@v1_support should be omitted", payload.playerSupport)
+    }
+
+    @Test
+    fun `omitted audioPlayerFactory with PLAYER advertised fails fast`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            buildClient(audioPlayerFactory = null)
+        }
+        assertTrue(
+            "message should name the conflicting settings, was: ${error.message}",
+            error.message!!.contains("supportedOptionalRoles") &&
+                error.message!!.contains("audioPlayerFactory"),
+        )
+    }
+
+    @Test
+    fun `omitted audioPlayerFactory without PLAYER falls back to NoOpAudioPlayer`() {
+        val client = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER),
+            ),
+            audioPlayerFactory = null,
+        )
+        assertEquals(NoOpAudioPlayer, client.audioPlayer)
     }
 
     @Test
