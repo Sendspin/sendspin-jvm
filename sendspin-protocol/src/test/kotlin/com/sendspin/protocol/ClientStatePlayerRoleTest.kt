@@ -46,10 +46,10 @@ class ClientStatePlayerRoleTest {
         override fun close(code: Int, reason: String?) {}
     }
 
-    private fun buildClient() = SendSpinClient(
+    private fun buildClient(preferences: ClientPreferences = defaultPreferences) = SendSpinClient(
         okHttpClient = OkHttpClient.Builder().build(),
         moshi = moshi,
-        preferences = defaultPreferences,
+        preferences = preferences,
         clientId = "test-id",
         clientName = "Test",
         manufacturer = "Acme",
@@ -83,6 +83,20 @@ class ClientStatePlayerRoleTest {
         )
         val json = firstClientStateJson(socket)
         assertTrue("client/state should carry a player object for an active player role: $json", json.contains(""""player""""))
+    }
+
+    @Test
+    fun `client-state omits player object when the client never advertised the player role`() {
+        val client = buildClient(
+            defaultPreferences.copy(supportedOptionalRoles = setOf(OptionalRole.METADATA)),
+        )
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("player@v1")),
+        )
+        val json = firstClientStateJson(socket)
+        assertFalse("client/state should not carry a player object we never advertised: $json", json.contains(""""player""""))
     }
 
     @Test

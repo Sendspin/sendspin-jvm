@@ -6,6 +6,7 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,6 +51,7 @@ class SendSpinClientHelloTest {
         macAddress: String? = null,
         preferences: ClientPreferences = defaultPreferences,
         settingsStore: ClientSettingsStore = NoOpClientSettingsStore,
+        audioPlayerFactory: ((AudioBuffer, ClockSync) -> AudioPlayer)? = noOpPlayerFactory,
     ) = SendSpinClient(
         okHttpClient = OkHttpClient.Builder().build(),
         moshi = moshi,
@@ -60,7 +62,7 @@ class SendSpinClientHelloTest {
         productName = productName,
         softwareVersion = softwareVersion,
         macAddress = macAddress,
-        audioPlayerFactory = noOpPlayerFactory,
+        audioPlayerFactory = audioPlayerFactory,
         settingsStore = settingsStore,
     )
 
@@ -203,6 +205,145 @@ class SendSpinClientHelloTest {
             """{"type":"stream/end","payload":{"roles":["visualizer@v1"]}}"""
         )
         assertNull("visualizerStreamConfig should be null after stream/end with visualizer@v1", client.visualizerStreamConfig.value)
+    }
+
+    @Test
+    fun `empty supportedOptionalRoles advertises no role and omits every support block`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                supportedOptionalRoles = emptySet(),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals("no role should be advertised", emptyList<String>(), payload.supportedRoles)
+        assertNull("player support should be omitted", payload.playerSupport)
+        assertNull("metadata support should be omitted", payload.metadataSupport)
+        assertNull("artwork support should be omitted", payload.artworkSupport)
+        assertNull("controller support should be omitted", payload.controllerSupport)
+        assertNull("color support should be omitted", payload.colorSupport)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `supportedOptionalRoles defaults to the full set and advertises the optional roles`() {
+        val payload = parseHello(buildClient().buildClientHelloJson()).payload
+        assertEquals(
+            "default hello wire output must not move",
+            listOf("player@v1", "metadata@v1", "artwork@v1", "controller@v1", "color@v1"),
+            payload.supportedRoles,
+        )
+        assertNotNull(payload.playerSupport)
+        assertNotNull(payload.metadataSupport)
+        assertNotNull(payload.artworkSupport)
+        assertNotNull(payload.controllerSupport)
+        assertNotNull(payload.colorSupport)
+    }
+
+    @Test
+    fun `supportedOptionalRoles advertises only the selected subset in enum order`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER, OptionalRole.METADATA),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(
+            listOf("metadata@v1", "controller@v1"),
+            payload.supportedRoles,
+        )
+        assertNotNull("metadata support should be advertised", payload.metadataSupport)
+        assertNotNull("controller support should be advertised", payload.controllerSupport)
+        assertNull("player support should be omitted", payload.playerSupport)
+        assertNull("artwork support should be omitted", payload.artworkSupport)
+        assertNull("color support should be omitted", payload.colorSupport)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `VISUALIZER in supportedOptionalRoles without visualizerSupport omits the role`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = null,
+                supportedOptionalRoles = setOf(OptionalRole.VISUALIZER),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals("no role should be advertised", emptyList<String>(), payload.supportedRoles)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `visualizerSupport without VISUALIZER in supportedOptionalRoles omits the role`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                supportedOptionalRoles = setOf(OptionalRole.METADATA),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(listOf("metadata@v1"), payload.supportedRoles)
+        assertNull("visualizer support should be omitted", payload.visualizerSupport)
+    }
+
+    @Test
+    fun `PLAYER absent from supportedOptionalRoles omits player@v1 and its support block`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER),
+            ),
+        ).buildClientHelloJson()
+        val payload = parseHello(json).payload
+
+        assertEquals(listOf("controller@v1"), payload.supportedRoles)
+        assertNull("player@v1_support should be omitted", payload.playerSupport)
+    }
+
+    @Test
+    fun `omitted audioPlayerFactory with PLAYER advertised fails fast`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            buildClient(audioPlayerFactory = null)
+        }
+        assertTrue(
+            "message should name the conflicting settings, was: ${error.message}",
+            error.message!!.contains("supportedOptionalRoles") &&
+                error.message!!.contains("audioPlayerFactory"),
+        )
+    }
+
+    @Test
+    fun `omitted audioPlayerFactory without PLAYER falls back to NoOpAudioPlayer`() {
+        val client = buildClient(
+            preferences = defaultPreferences.copy(
+                supportedOptionalRoles = setOf(OptionalRole.CONTROLLER),
+            ),
+            audioPlayerFactory = null,
+        )
+        assertEquals(NoOpAudioPlayer, client.audioPlayer)
+    }
+
+    @Test
+    fun `player support advertises buffer_capacity and supported_commands from preferences`() {
+        val json = buildClient(
+            preferences = defaultPreferences.copy(
+                playerBufferCapacity = 524288,
+                playerSupportedCommands = listOf("volume", "mute", "seek"),
+            ),
+        ).buildClientHelloJson()
+        val support = parseHello(json).payload.playerSupport!!
+        assertEquals(524288, support.bufferCapacity)
+        assertEquals(listOf("volume", "mute", "seek"), support.supportedCommands)
+    }
+
+    @Test
+    fun `player support defaults preserve buffer_capacity and volume-mute commands`() {
+        val support = parseHello(buildClient().buildClientHelloJson()).payload.playerSupport!!
+        assertEquals(262144, support.bufferCapacity)
+        assertEquals(listOf("volume", "mute"), support.supportedCommands)
     }
 
     @Test
