@@ -18,14 +18,14 @@ class StreamClearTest {
         artworkChannels = emptyList(),
     )
 
-    private fun buildClientWithCapture(flushCount: IntArray): SendSpinClient {
+    private fun buildClient(): SendSpinClient {
         val factory: (AudioBuffer, ClockSync) -> AudioPlayer = { _, _ ->
             object : AudioPlayer {
                 override val isPlaying = false
                 override val droppedDecodeFrames = 0L
                 override fun configure(format: StreamFormat) {}
                 override fun start() {}
-                override fun flush() { flushCount[0]++ }
+                override fun flushSink() {}
                 override fun stop() {}
                 override fun transition(format: StreamFormat) {}
                 override fun setVolume(gain: Float) {}
@@ -44,35 +44,41 @@ class StreamClearTest {
         )
     }
 
+    /** A fresh ClockSync has offset 0, so a "now" server timestamp is admitted, not dropped. */
+    private fun SendSpinClient.bufferOneChunk() {
+        audioBuffer.offer(AudioChunk(ClockSync.localMicros(), ByteArray(4)))
+        assertEquals("precondition: the chunk must be buffered", 1, audioBuffer.size)
+    }
+
     @Test
-    fun `stream clear with no roles flushes audio player`() {
-        val flushCount = intArrayOf(0)
-        val client = buildClientWithCapture(flushCount)
+    fun `stream clear with no roles clears the player buffer`() {
+        val client = buildClient()
+        client.bufferOneChunk()
         client.handleTextMessage("""{"type":"stream/clear"}""")
-        assertEquals(1, flushCount[0])
+        assertEquals(0, client.audioBuffer.size)
     }
 
     @Test
-    fun `stream clear with player role flushes audio player`() {
-        val flushCount = intArrayOf(0)
-        val client = buildClientWithCapture(flushCount)
+    fun `stream clear with player role clears the player buffer`() {
+        val client = buildClient()
+        client.bufferOneChunk()
         client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["player"]}}""")
-        assertEquals(1, flushCount[0])
+        assertEquals(0, client.audioBuffer.size)
     }
 
     @Test
-    fun `stream clear with only visualizer role does not flush audio player`() {
-        val flushCount = intArrayOf(0)
-        val client = buildClientWithCapture(flushCount)
+    fun `stream clear with only visualizer role leaves the player buffer intact`() {
+        val client = buildClient()
+        client.bufferOneChunk()
         client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["visualizer"]}}""")
-        assertEquals(0, flushCount[0])
+        assertEquals(1, client.audioBuffer.size)
     }
 
     @Test
-    fun `stream clear with both roles flushes audio player`() {
-        val flushCount = intArrayOf(0)
-        val client = buildClientWithCapture(flushCount)
+    fun `stream clear with both roles clears the player buffer`() {
+        val client = buildClient()
+        client.bufferOneChunk()
         client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["player","visualizer"]}}""")
-        assertEquals(1, flushCount[0])
+        assertEquals(0, client.audioBuffer.size)
     }
 }

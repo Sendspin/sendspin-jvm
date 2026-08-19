@@ -31,7 +31,7 @@ class SendSpinClientSessionResetTest {
             override val droppedDecodeFrames = 0L
             override fun configure(format: StreamFormat) {}
             override fun start() {}
-            override fun flush() {}
+            override fun flushSink() {}
             override fun stop() {}
             override fun transition(format: StreamFormat) {}
             override fun setVolume(gain: Float) {}
