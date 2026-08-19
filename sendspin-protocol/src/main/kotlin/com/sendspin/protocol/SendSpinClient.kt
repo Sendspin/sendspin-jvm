@@ -487,10 +487,10 @@ class SendSpinClient(
                 }
                 if (!firstMeasurementCompleted) {
                     firstMeasurementCompleted = true
-                    // Flush chunks that arrived with offset=0 before the first estimate was ready.
-                    // Delegated through audioPlayer so implementations that don't need timing-based
-                    // flushing (e.g. conformance adapter) can override flush() as a no-op.
-                    audioPlayer.flush()
+                    // Drop chunks that arrived with offset=0, before the first estimate was ready:
+                    // their scheduled times were computed against a meaningless clock.
+                    audioBuffer.flush()
+                    audioScope.launch { audioPlayer.flushSink() }
                 }
                 if (_state.value == ClientState.CLOCK_SYNCING) {
                     _state.value = ClientState.STREAMING
@@ -508,7 +508,17 @@ class SendSpinClient(
                 if (msg.player != null) {
                     Timber.i("SendSpinClient: stream/start codec=%s", msg.player.codec)
                     sendClientState()
+                    // The buffer clear MUST be synchronous here on the reader thread so it lands in
+                    // wire order — strictly after the last old-stream chunk (offered earlier on this
+                    // same thread) and before the first new-stream chunk (offered later). OkHttp
+                    // delivers onMessage on one thread, so that ordering holds by construction. An
+                    // async hop would let a straggler old chunk slip in after the clear and mix the
+                    // two streams together.
+                    audioBuffer.flush()
                     audioScope.launch {
+                        // The sink drain is async (audio thread) and does NOT clear the buffer, so
+                        // it cannot wipe new-stream chunks already offered after the clear above.
+                        audioPlayer.flushSink()
                         pendingStopJob?.cancel()
                         pendingStopJob = null
                         if (audioPlayer.isPlaying) {
@@ -526,7 +536,12 @@ class SendSpinClient(
                 val roles = msg.roles
                 val clearPlayer = roles == null || roles.any { it == "player@v1" || it == "player" }
                 Timber.d("SendSpinClient: stream/clear roles=%s", roles)
-                if (clearPlayer) audioPlayer.flush()
+                if (clearPlayer) {
+                    // Same split as the discontinuity stream/start: synchronous buffer clear
+                    // (ordered on the reader thread), async sink drain.
+                    audioBuffer.flush()
+                    audioScope.launch { audioPlayer.flushSink() }
+                }
             }
             is StreamEnd -> {
                 val roles = msg.roles
