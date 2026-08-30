@@ -67,6 +67,19 @@ Fixed here:
   repeat/shuffle, etc.) is unchanged and still covered by the pre-existing tests, all of which
   still pass.
 
+**Known CI break, accepted, to be fixed post-merge:** this `JsonOptional<T>` wrapping changes
+`ServerState.metadata`/`controller`/`color`'s public field types, which breaks CI's `conformance`
+check — it builds `Sendspin/conformance`'s own `sendspin-jvm` adapter (a file in that repo, not
+this one) against this branch as a library dependency, and that adapter reads `serverState.metadata`
+as a plain `TrackMetadataMsg?`. A same-branch workaround (keeping the fields plain-nullable and
+carrying the absent/null distinction in a side `explicitlyNulledRoles: Set<String>` field via a
+hand-written Moshi adapter) was tried and reverted: it avoided the break but made the type
+inconsistent with the sibling `JsonOptional<T>`-typed leaf fields on `TrackMetadataMsg`, and two
+separate checks (`!= null` and `in explicitlyNulledRoles`) for one question is a worse interface
+than the type-safe three-state `JsonOptional<T>`. Decision: keep the clean typed fix here and
+update the `Sendspin/conformance` adapter separately after this PR merges — CI's `conformance`
+check is expected to stay red on this PR until that follow-up lands.
+
 ### 2. [PR #172](https://github.com/Sendspin/spec/pull/172) "Give fragmentation a single ID"
 
 Fragmentation was not implemented before this change (confirmed: no `fragment` references
@@ -175,3 +188,6 @@ No code changes for any of these four.
   branch's `SendSpinClient.kt`/`Messages.kt` have their own copy of the same code; this pass only
   fixed it here. Whoever reconciles the two branches needs to port it (or re-derive it — it's a
   small, self-contained change) rather than assume a merge picks it up automatically.
+- **Updating `Sendspin/conformance`'s `sendspin-jvm` adapter** for the `ServerState.metadata`/
+  `controller`/`color` type change (see #1's "Known CI break" note) — a different repo, out of
+  reach from this branch. CI's `conformance` check will stay red on this PR until that's done.
