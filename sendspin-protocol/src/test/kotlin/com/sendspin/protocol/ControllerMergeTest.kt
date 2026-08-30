@@ -246,6 +246,58 @@ class ControllerMergeTest {
     }
 
     @Test
+    fun `explicit null controller object clears controller state`() {
+        // Establish controller state first.
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 80, "muted": false, "repeat": "all" }
+              }
+            }
+        """.trimIndent())
+        assertEquals(80, client.controllerState.value!!.volume)
+
+        // Server explicitly nulls the role object — must clear, not leave stale.
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": null
+              }
+            }
+        """.trimIndent())
+
+        assertNull(client.controllerState.value)
+    }
+
+    @Test
+    fun `omitting controller key entirely leaves controller state unchanged`() {
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "controller": { "volume": 80, "muted": false, "repeat": "all" }
+              }
+            }
+        """.trimIndent())
+        assertEquals(80, client.controllerState.value!!.volume)
+
+        // No "controller" key at all (and no legacy metadata repeat/shuffle either) — unchanged.
+        client.handleTextMessage("""
+            {
+              "type": "server/state",
+              "payload": {
+                "metadata": { "title": "Track" }
+              }
+            }
+        """.trimIndent())
+
+        assertEquals(80, client.controllerState.value!!.volume)
+        assertEquals(JsonOptional.Present("all"), client.controllerState.value!!.repeat)
+    }
+
+    @Test
     fun `no repeat or shuffle in either source leaves controller state null`() {
         client.handleTextMessage("""
             {

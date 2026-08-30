@@ -185,10 +185,10 @@ class SendSpinClient(
     private val _visualizerStreamConfig = MutableStateFlow<StreamVisualizerConfig?>(null)
     val visualizerStreamConfig: StateFlow<StreamVisualizerConfig?> = _visualizerStreamConfig
 
-    @Volatile private var staticDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.STATIC_DELAY_MS, 0)
+    @Volatile private var outputDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.OUTPUT_DELAY_MS, 0)
         .coerceIn(0, 5000)
     init {
-        audioBuffer.staticDelayMicros = staticDelayMs * 1_000L
+        audioBuffer.outputDelayMicros = outputDelayMs * 1_000L
     }
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
@@ -196,17 +196,17 @@ class SendSpinClient(
     // Per-player volume/mute, as set via server/command (player.command = "volume" | "mute").
     // Reported back to the server in client/state's player.volume / player.muted.
     // Persisted across restarts (spec PR #113: "persisting volume/muted across reboots is
-    // RECOMMENDED"), matching the static_delay_ms precedent. Default to full volume / unmuted:
+    // RECOMMENDED"), matching the output_delay_ms precedent. Default to full volume / unmuted:
     // the spec requires these fields be present in client/state whenever "volume"/"mute" are in
     // supported_commands, even before the server has sent an explicit command.
     @Volatile private var playerVolume: Int = settingsStore.getInt(ClientSettingsKeys.PLAYER_VOLUME, 100)
         .coerceIn(0, 100)
     @Volatile private var playerMuted: Boolean = settingsStore.getInt(ClientSettingsKeys.PLAYER_MUTED, 0) != 0
 
-    fun setStaticDelayMs(delayMs: Int) {
-        staticDelayMs = delayMs.coerceIn(0, 5000)
-        audioBuffer.staticDelayMicros = staticDelayMs * 1_000L
-        settingsStore.putInt(ClientSettingsKeys.STATIC_DELAY_MS, staticDelayMs)
+    fun setOutputDelayMs(delayMs: Int) {
+        outputDelayMs = delayMs.coerceIn(0, 5000)
+        audioBuffer.outputDelayMicros = outputDelayMs * 1_000L
+        settingsStore.putInt(ClientSettingsKeys.OUTPUT_DELAY_MS, outputDelayMs)
         sendClientState()
         // Chunks already in the buffer retain their old scheduled times; the new delay applies
         // only to newly arriving chunks. The transition resolves within one server buffer window
@@ -460,16 +460,19 @@ class SendSpinClient(
         when (val msg = parser.parseText(json)) {
             is ServerHello -> handleServerHello(msg)
             is ServerState -> {
-                val title = (msg.metadata?.title as? JsonOptional.Present)?.value
+                val metadataValue = msg.metadata.orNull()
+                val title = metadataValue?.title?.orNull()
                 if (title != null) Timber.i("SendSpinClient: server/state title='%s'", title)
-                val progress = msg.metadata?.progress
+                val progress = metadataValue?.progress
                 if (progress != null) Timber.d("SendSpinClient: server/state progress=%dms speed=%d",
                     progress.trackProgress, progress.playbackSpeed)
-                val effectiveController = mergeControllerWithMetadata(msg)
-                if (effectiveController != null) {
-                    _controllerState.value = effectiveController
+                when (val update = mergeControllerWithMetadata(msg)) {
+                    is ControllerUpdate.Set -> _controllerState.value = update.state
+                    ControllerUpdate.Clear -> _controllerState.value = null
+                    ControllerUpdate.NoChange -> { /* role omitted or nothing changed — leave as-is */ }
                 }
-                if (msg.color != null) _colorState.value = msg.color
+                // color is Absent (leave unchanged) / Present(null) (clear) / Present(value) (update).
+                if (msg.color is JsonOptional.Present) _colorState.value = msg.color.value
                 _serverState.tryEmit(msg)
                 if (_state.value == ClientState.CLOCK_SYNCING || _state.value == ClientState.STREAMING) {
                     _state.value = ClientState.STREAMING
@@ -567,8 +570,8 @@ class SendSpinClient(
             }
             is ServerCommand -> {
                 val player = msg.player ?: return
-                Timber.d("SendSpinClient: server/command player command=%s volume=%s mute=%s static_delay_ms=%s",
-                    player.command, player.volume, player.mute, player.staticDelayMs)
+                Timber.d("SendSpinClient: server/command player command=%s volume=%s mute=%s output_delay_ms=%s",
+                    player.command, player.volume, player.mute, player.outputDelayMs)
                 when (player.command) {
                     "volume" -> {
                         val requested = player.volume
@@ -596,12 +599,12 @@ class SendSpinClient(
                             sendClientState()
                         }
                     }
-                    "set_static_delay" -> {
-                        val ms = player.staticDelayMs
+                    "set_output_delay" -> {
+                        val ms = player.outputDelayMs
                         if (ms == null) {
-                            Timber.w("SendSpinClient: server/command set_static_delay missing 'static_delay_ms' field, ignoring")
+                            Timber.w("SendSpinClient: server/command set_output_delay missing 'output_delay_ms' field, ignoring")
                         } else {
-                            setStaticDelayMs(ms)
+                            setOutputDelayMs(ms)
                         }
                     }
                     else -> Timber.d("SendSpinClient: unhandled server/command player.command=%s", player.command)
@@ -623,38 +626,50 @@ class SendSpinClient(
         audioPlayer.setVolume(gain)
     }
 
+    /** Result of reconciling `server/state`'s `controller` object against local state. */
+    private sealed interface ControllerUpdate {
+        /** `controller` was Absent (and metadata carried no legacy repeat/shuffle) — leave as-is. */
+        data object NoChange : ControllerUpdate
+        /** `controller` was explicitly `null` — clear all controller state. */
+        data object Clear : ControllerUpdate
+        data class Set(val state: ControllerState) : ControllerUpdate
+    }
+
     @Suppress("DEPRECATION")
-    private fun mergeControllerWithMetadata(msg: ServerState): ControllerState? {
+    private fun mergeControllerWithMetadata(msg: ServerState): ControllerUpdate {
         val ctrl = msg.controller
-        val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
-        val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
+        if (ctrl is JsonOptional.Present && ctrl.value == null) return ControllerUpdate.Clear
+        val ctrlValue = ctrl.orNull()
+        val metadataValue = msg.metadata.orNull()
+        val rawRepeat  = metadataValue?.repeat  ?: JsonOptional.Absent
+        val rawShuffle = metadataValue?.shuffle ?: JsonOptional.Absent
         return when {
-            ctrl != null -> {
+            ctrlValue != null -> {
                 // Priority: controller (if Present) > metadata (if Present) > existing stored value.
                 // Absent from both sources means the server did not touch the field — preserve it.
                 val stored  = _controllerState.value
                 val repeat  = when {
-                    ctrl.repeat  is JsonOptional.Present -> ctrl.repeat
-                    rawRepeat    is JsonOptional.Present -> rawRepeat
+                    ctrlValue.repeat is JsonOptional.Present -> ctrlValue.repeat
+                    rawRepeat        is JsonOptional.Present -> rawRepeat
                     else -> stored?.repeat ?: JsonOptional.Absent
                 }
                 val shuffle = when {
-                    ctrl.shuffle is JsonOptional.Present -> ctrl.shuffle
-                    rawShuffle   is JsonOptional.Present -> rawShuffle
+                    ctrlValue.shuffle is JsonOptional.Present -> ctrlValue.shuffle
+                    rawShuffle       is JsonOptional.Present -> rawShuffle
                     else -> stored?.shuffle ?: JsonOptional.Absent
                 }
-                ctrl.copy(repeat = repeat, shuffle = shuffle)
+                ControllerUpdate.Set(ctrlValue.copy(repeat = repeat, shuffle = shuffle))
             }
             rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
                 // No controller object. Old server sends repeat/shuffle only via metadata.
                 // Only update an existing controller state to avoid inventing volume/muted defaults.
-                val current = _controllerState.value ?: return null
-                current.copy(
+                val current = _controllerState.value ?: return ControllerUpdate.NoChange
+                ControllerUpdate.Set(current.copy(
                     repeat  = if (rawRepeat  is JsonOptional.Present) rawRepeat  else current.repeat,
                     shuffle = if (rawShuffle is JsonOptional.Present) rawShuffle else current.shuffle,
-                )
+                ))
             }
-            else -> null
+            else -> ControllerUpdate.NoChange
         }
     }
 
@@ -794,7 +809,7 @@ class SendSpinClient(
             PlayerStatePayload(
                 volume = playerVolume,
                 muted = playerMuted,
-                staticDelayMs = staticDelayMs,
+                outputDelayMs = outputDelayMs,
                 requiredLeadTimeMs = requiredLeadTimeMs,
                 minBufferMs = minBufferMs,
             )

@@ -6,7 +6,7 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-class StaticDelayPersistenceTest {
+class OutputDelayPersistenceTest {
 
     private val moshi = Moshi.Builder()
         .add(JsonOptionalAdapterFactory())
@@ -52,22 +52,22 @@ class StaticDelayPersistenceTest {
     )
 
     @Test
-    fun `setStaticDelayMs persists value to settings store`() {
+    fun `setOutputDelayMs persists value to settings store`() {
         val store = FakeSettingsStore()
         val client = buildClient(store)
 
-        client.setStaticDelayMs(1500)
+        client.setOutputDelayMs(1500)
 
-        assertEquals(1500, store.ints[ClientSettingsKeys.STATIC_DELAY_MS])
+        assertEquals(1500, store.ints[ClientSettingsKeys.OUTPUT_DELAY_MS])
     }
 
     @Test
-    fun `static delay is loaded from settings store on construction`() {
+    fun `output delay is loaded from settings store on construction`() {
         val store = FakeSettingsStore()
-        store.ints[ClientSettingsKeys.STATIC_DELAY_MS] = 1500
+        store.ints[ClientSettingsKeys.OUTPUT_DELAY_MS] = 1500
 
         val client = buildClient(store)
 
-        assertEquals(1_500_000L, client.audioBuffer.staticDelayMicros)
+        assertEquals(1_500_000L, client.audioBuffer.outputDelayMicros)
     }
 }

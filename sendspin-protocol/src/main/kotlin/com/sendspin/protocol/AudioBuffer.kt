@@ -25,10 +25,10 @@ class AudioBuffer(
         compareBy { it.chunk.serverTimestampMicros },
     )
 
-    // ── Static delay ──────────────────────────────────────────────────────────
+    // ── Output delay ──────────────────────────────────────────────────────────
 
     /** Microseconds to subtract from every chunk's scheduled play time (receiver compensation). */
-    @Volatile var staticDelayMicros: Long = 0L
+    @Volatile var outputDelayMicros: Long = 0L
 
     // ── Stats (for diagnostics) ───────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ class AudioBuffer(
 
     /** Computes the chunk's current scheduled local playback time from the live [clockSync] estimate. */
     private fun scheduledMicros(chunk: AudioChunk, nowMicros: Long): Long =
-        clockSync.toLocalMicros(chunk.serverTimestampMicros, nowMicros) - staticDelayMicros
+        clockSync.toLocalMicros(chunk.serverTimestampMicros, nowMicros) - outputDelayMicros
 
     // ── Read path ─────────────────────────────────────────────────────────────
 

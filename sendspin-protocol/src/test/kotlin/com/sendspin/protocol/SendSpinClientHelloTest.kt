@@ -153,6 +153,34 @@ class SendSpinClientHelloTest {
     }
 
     @Test
+    fun `server-state explicit null color clears colorState`() {
+        val client = buildClient()
+        client.handleTextMessage(
+            """{"type":"server/state","payload":{"color":{"timestamp":1000,"primary":[255,0,0]}}}"""
+        )
+        assertNotNull("colorState should be set after server/state with color", client.colorState.value)
+
+        client.handleTextMessage("""{"type":"server/state","payload":{"color":null}}""")
+
+        assertNull("explicit null color object must clear colorState per spec", client.colorState.value)
+    }
+
+    @Test
+    fun `server-state omitting color leaves colorState unchanged`() {
+        val client = buildClient()
+        client.handleTextMessage(
+            """{"type":"server/state","payload":{"color":{"timestamp":1000,"primary":[255,0,0]}}}"""
+        )
+        assertNotNull(client.colorState.value)
+
+        // metadata-only update, no "color" key at all — must not touch colorState.
+        client.handleTextMessage("""{"type":"server/state","payload":{"metadata":{"title":"Track"}}}""")
+
+        assertNotNull("omitted color role must leave prior state untouched", client.colorState.value)
+        assertEquals(1000L, client.colorState.value!!.timestamp)
+    }
+
+    @Test
     fun `buildClientHelloJson includes mac_address when provided`() {
         val json = buildClient(macAddress = "AA:BB:CC:DD:EE:FF").buildClientHelloJson()
         assertEquals("AA:BB:CC:DD:EE:FF", parseHello(json).payload.macAddress)
