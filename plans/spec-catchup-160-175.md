@@ -46,38 +46,26 @@ role state, which then hit this bug). Flagged it to that session; they confirmed
 (no Noise/PSK/pairing involvement) and asked this session to own it instead, since it's part of
 `server/state` handling rather than their transport-framing work.
 
-First fix attempt wrapped `ServerState.metadata`/`controller`/`color` in `JsonOptional<T>` (the
-pattern already used for `TrackMetadataMsg`'s leaf fields). That broke CI's `conformance` check:
-it builds `Sendspin/conformance`'s own `sendspin-jvm` adapter (`adapters/sendspin-jvm/client/`,
-a file in the *conformance* repo, not this one) against this branch as a library dependency, and
-that adapter reads `serverState.metadata` as a plain `TrackMetadataMsg?` — a real external
-consumer this repo can't fix by pushing here. Reworked to keep the public field types unchanged:
-
-- `Messages.kt`: `ServerState.metadata`/`controller`/`color` stay plain nullable (`TrackMetadataMsg?`
-  etc., unchanged from before this PR) — source-compatible with every existing consumer. Added a
-  new field, `explicitlyNulledRoles: Set<String> = emptySet()`, naming which of
-  `"metadata"`/`"controller"`/`"color"` arrived as an explicit JSON `null` on this message. Being
-  additive with a default, it doesn't break positional construction or `copy()` calls either.
-- `JsonOptional.kt`: added `ServerStateJsonAdapter`, a hand-written (not KSP-generated) Moshi
-  adapter that's the only way to actually populate `explicitlyNulledRoles` — a `@JsonClass`-codegen
-  or reflection-based adapter can't distinguish "key absent" from "key present as `null`" for a
-  plain nullable field, which is exactly the ambiguity being resolved. Wired into
-  `JsonOptionalAdapterFactory.create()` (intercepting `ServerState::class.java` specifically)
-  rather than needing a separate Moshi registration — every consumer already registers that
-  factory to use `JsonOptional`-typed fields elsewhere in this library, so this required no
-  consumer-side Moshi setup change.
-- `SendSpinClient.kt`: the `is ServerState ->` handler checks `msg.color`/`explicitlyNulledRoles`
-  directly (non-null → update, `in explicitlyNulledRoles` → clear, neither → leave `StateFlow`
-  untouched). `controller` needed more care because of the deprecated repeat/shuffle-via-metadata
-  merge (`mergeControllerWithMetadata`) — that function returns a small `ControllerUpdate` sealed
+Fixed here:
+- `Messages.kt`: `ServerState.metadata`/`controller`/`color` wrapped in `JsonOptional<T>` (same
+  pattern already used for `TrackMetadataMsg`'s leaf fields), defaulting to `Absent`.
+- `JsonOptional.kt`: added an `orNull()` extension (`Present(v) → v`, `Absent → null`) for the
+  common case of just wanting the value when present, letting call sites read close to how they
+  did with the old plain-nullable fields.
+- `SendSpinClient.kt`: the `is ServerState ->` handler now branches on `Absent` (leave `StateFlow`
+  untouched) vs `Present(null)` (clear it) vs `Present(value)` (update) for `color`. `controller`
+  needed more care because of the deprecated repeat/shuffle-via-metadata merge
+  (`mergeControllerWithMetadata`) — that function now returns a small `ControllerUpdate` sealed
   result (`NoChange`/`Clear`/`Set`) instead of a bare `ControllerState?`, since a plain nullable
   return type couldn't distinguish "nothing to do" from "clear it."
-- Tests: parse-level coverage (`MessageParserTest`: role objects omitted → absent from
-  `explicitlyNulledRoles`, explicit `null` → present in it) and behavioral coverage
+- Tests: added parse-level coverage (`MessageParserTest`: role objects omitted → `Absent`, role
+  objects explicit `null` → `Present(null)`, distinct from each other) and behavioral coverage
   (`ControllerMergeTest`: explicit-null clears controller state, omitted key leaves it unchanged;
-  `SendSpinClientHelloTest`: same two cases for `color`). All prior merge-precedence behavior
-  (controller wins over legacy metadata repeat/shuffle, etc.) is unchanged and still covered by
-  the pre-existing tests, all of which still pass.
+  `SendSpinClientHelloTest`: same two cases for `color`). Existing `MessageParserTest`/
+  `ControllerMergeTest` call sites updated to unwrap the new `JsonOptional`-wrapped fields via
+  `.orNull()` — all prior merge-precedence behavior (controller wins over legacy metadata
+  repeat/shuffle, etc.) is unchanged and still covered by the pre-existing tests, all of which
+  still pass.
 
 ### 2. [PR #172](https://github.com/Sendspin/spec/pull/172) "Give fragmentation a single ID"
 
