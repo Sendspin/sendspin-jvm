@@ -121,12 +121,12 @@ class VolumeCurveTest {
     }
 
     @Test
-    fun `set_static_delay command applies delay to audio buffer`() {
+    fun `set_output_delay command applies delay to audio buffer`() {
         val gains = mutableListOf<Float>()
         val client = buildClientWithCapture(gains)
-        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"set_static_delay","static_delay_ms":250}}}""")
-        assertEquals(250_000L, client.audioBuffer.staticDelayMicros)
-        // Volume command path is unaffected by a static-delay command.
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"set_output_delay","output_delay_ms":250}}}""")
+        assertEquals(250_000L, client.audioBuffer.outputDelayMicros)
+        // Volume command path is unaffected by an output-delay command.
         assertEquals(0, gains.size)
     }
 

@@ -2,7 +2,7 @@ package com.sendspin.protocol
 
 /**
  * Host-provided persistence for client settings that must survive process restarts
- * (e.g. `static_delay_ms`, last-played server id). The protocol module has no
+ * (e.g. `output_delay_ms`, last-played server id). The protocol module has no
  * filesystem/platform assumptions, so the host app supplies an implementation
  * backed by its own preferences API, a file, etc.
  */
@@ -23,7 +23,7 @@ object NoOpClientSettingsStore : ClientSettingsStore {
 
 /** Setting keys used by [SendSpinClient]. */
 object ClientSettingsKeys {
-    const val STATIC_DELAY_MS = "static_delay_ms"
+    const val OUTPUT_DELAY_MS = "output_delay_ms"
     const val PLAYER_VOLUME = "player_volume"
     const val PLAYER_MUTED = "player_muted"
 }

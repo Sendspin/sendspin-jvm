@@ -166,12 +166,12 @@ class AudioBufferTest {
         assertNotNull(buffer.poll(now + 500_000L))
     }
 
-    // ── Static delay ─────────────────────────────────────────────────────────
+    // ── Output delay ─────────────────────────────────────────────────────────
 
     @Test
-    fun `staticDelayMicros shifts scheduled play time earlier`() {
+    fun `outputDelayMicros shifts scheduled play time earlier`() {
         val now = System.nanoTime() / 1_000L
-        buffer.staticDelayMicros = 200_000L // 200 ms
+        buffer.outputDelayMicros = 200_000L // 200 ms
 
         // Server timestamp 300 ms in the future; with 200 ms delay, local time = now+100 ms
         buffer.offer(chunk(now + 300_000L))
@@ -183,9 +183,9 @@ class AudioBufferTest {
     }
 
     @Test
-    fun `zero staticDelayMicros does not shift playback time`() {
+    fun `zero outputDelayMicros does not shift playback time`() {
         val now = System.nanoTime() / 1_000L
-        buffer.staticDelayMicros = 0L
+        buffer.outputDelayMicros = 0L
 
         buffer.offer(chunk(now + 300_000L))
         assertNull(buffer.poll(now + 100_000L))

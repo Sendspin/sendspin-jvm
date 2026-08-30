@@ -87,10 +87,10 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Present("Test Track"), msg.metadata?.title)
-        assertEquals(JsonOptional.Present("Test Artist"), msg.metadata?.artist)
-        assertEquals(30000L, msg.metadata?.progress?.trackProgress)
-        assertEquals(240000L, msg.metadata?.progress?.trackDuration)
+        assertEquals(JsonOptional.Present("Test Track"), msg.metadata.orNull()?.title)
+        assertEquals(JsonOptional.Present("Test Artist"), msg.metadata.orNull()?.artist)
+        assertEquals(30000L, msg.metadata.orNull()?.progress?.trackProgress)
+        assertEquals(240000L, msg.metadata.orNull()?.progress?.trackDuration)
     }
 
     @Test
@@ -107,9 +107,9 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Present("Radio Station"), msg.metadata?.title)
-        assertEquals(JsonOptional.Absent, msg.metadata?.artist)
-        assertEquals(JsonOptional.Absent, msg.metadata?.album)
+        assertEquals(JsonOptional.Present("Radio Station"), msg.metadata.orNull()?.title)
+        assertEquals(JsonOptional.Absent, msg.metadata.orNull()?.artist)
+        assertEquals(JsonOptional.Absent, msg.metadata.orNull()?.album)
     }
 
     @Test
@@ -128,9 +128,26 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Present("Radio Station"), msg.metadata?.title)
-        assertEquals(JsonOptional.Present(null), msg.metadata?.artist)
-        assertEquals(JsonOptional.Present(null), msg.metadata?.album)
+        assertEquals(JsonOptional.Present("Radio Station"), msg.metadata.orNull()?.title)
+        assertEquals(JsonOptional.Present(null), msg.metadata.orNull()?.artist)
+        assertEquals(JsonOptional.Present(null), msg.metadata.orNull()?.album)
+    }
+
+    @Test
+    fun `parse server state - role objects omitted are Absent`() {
+        val msg = parser.parseText("""{"type":"server/state","payload":{}}""") as ServerState
+        assertEquals(JsonOptional.Absent, msg.metadata)
+        assertEquals(JsonOptional.Absent, msg.controller)
+        assertEquals(JsonOptional.Absent, msg.color)
+    }
+
+    @Test
+    fun `parse server state - explicit null role objects are Present(null), distinct from Absent`() {
+        val json = """{"type":"server/state","payload":{"metadata":null,"controller":null,"color":null}}"""
+        val msg = parser.parseText(json) as ServerState
+        assertEquals(JsonOptional.Present(null), msg.metadata)
+        assertEquals(JsonOptional.Present(null), msg.controller)
+        assertEquals(JsonOptional.Present(null), msg.color)
     }
 
     @Test
@@ -294,19 +311,19 @@ class MessageParserTest {
     }
 
     @Test
-    fun `serialize client state includes static_delay_ms in player object`() {
+    fun `serialize client state includes output_delay_ms in player object`() {
         val moshi = Moshi.Builder().add(JsonOptionalAdapterFactory()).addLast(KotlinJsonAdapterFactory()).build()
         val adapter = moshi.adapter(ClientStateMsg::class.java)
         val msg = ClientStateMsg(
             payload = ClientStateMsgPayload(
-                player = PlayerStatePayload(staticDelayMs = 200)
+                player = PlayerStatePayload(outputDelayMs = 200)
             )
         )
         val json = adapter.toJson(msg)
         assertTrue(json.contains(""""type":"client/state""""))
         assertTrue(json.contains(""""available":true"""))
         assertTrue(json.contains(""""player":{"""))
-        assertTrue(json.contains(""""static_delay_ms":200"""))
+        assertTrue(json.contains(""""output_delay_ms":200"""))
     }
 
     @Test
@@ -315,11 +332,11 @@ class MessageParserTest {
         val adapter = moshi.adapter(ClientStateMsg::class.java)
         val msg = ClientStateMsg(
             payload = ClientStateMsgPayload(
-                player = PlayerStatePayload(staticDelayMs = 0)
+                player = PlayerStatePayload(outputDelayMs = 0)
             )
         )
         val json = adapter.toJson(msg)
-        assertTrue(json.contains(""""static_delay_ms":0"""))
+        assertTrue(json.contains(""""output_delay_ms":0"""))
     }
 
     @Test
@@ -328,13 +345,13 @@ class MessageParserTest {
         val adapter = moshi.adapter(ClientStateMsg::class.java)
         val msg = ClientStateMsg(
             payload = ClientStateMsgPayload(
-                player = PlayerStatePayload(volume = 75, muted = false, staticDelayMs = 100)
+                player = PlayerStatePayload(volume = 75, muted = false, outputDelayMs = 100)
             )
         )
         val json = adapter.toJson(msg)
         assertTrue(json.contains(""""volume":75"""))
         assertTrue(json.contains(""""muted":false"""))
-        assertTrue(json.contains(""""static_delay_ms":100"""))
+        assertTrue(json.contains(""""output_delay_ms":100"""))
     }
 
     @Test
@@ -344,14 +361,14 @@ class MessageParserTest {
         val msg = ClientStateMsg(
             payload = ClientStateMsgPayload(
                 player = PlayerStatePayload(
-                    staticDelayMs = 100,
+                    outputDelayMs = 100,
                     requiredLeadTimeMs = 250,
                     minBufferMs = 500,
                 )
             )
         )
         val json = adapter.toJson(msg)
-        assertTrue(json.contains(""""static_delay_ms":100"""))
+        assertTrue(json.contains(""""output_delay_ms":100"""))
         assertTrue(json.contains(""""required_lead_time_ms":250"""))
         assertTrue(json.contains(""""min_buffer_ms":500"""))
     }
@@ -376,7 +393,7 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        val color = msg.color
+        val color = msg.color.orNull()
         assertNotNull(color)
         assertEquals(5_000_000L, color!!.timestamp)
         assertEquals(listOf(10, 20, 30), color.backgroundDark)
@@ -402,7 +419,7 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        val color = msg.color
+        val color = msg.color.orNull()
         assertNotNull(color)
         assertEquals(1000L, color!!.timestamp)
         assertEquals(listOf(128, 64, 32), color.primary)
@@ -431,9 +448,9 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Present("all"), msg.controller?.repeat)
-        assertEquals(JsonOptional.Present(true), msg.controller?.shuffle)
-        assertEquals(80, msg.controller?.volume)
+        assertEquals(JsonOptional.Present("all"), msg.controller.orNull()?.repeat)
+        assertEquals(JsonOptional.Present(true), msg.controller.orNull()?.shuffle)
+        assertEquals(80, msg.controller.orNull()?.volume)
     }
 
     @Test
@@ -451,8 +468,8 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Absent, msg.controller?.repeat)
-        assertEquals(JsonOptional.Absent, msg.controller?.shuffle)
+        assertEquals(JsonOptional.Absent, msg.controller.orNull()?.repeat)
+        assertEquals(JsonOptional.Absent, msg.controller.orNull()?.shuffle)
     }
 
     @Suppress("DEPRECATION")
@@ -472,8 +489,8 @@ class MessageParserTest {
         """.trimIndent()
 
         val msg = parser.parseText(json) as ServerState
-        assertEquals(JsonOptional.Present("one"), msg.metadata?.repeat)
-        assertEquals(JsonOptional.Present(false), msg.metadata?.shuffle)
+        assertEquals(JsonOptional.Present("one"), msg.metadata.orNull()?.repeat)
+        assertEquals(JsonOptional.Present(false), msg.metadata.orNull()?.shuffle)
     }
 
     @Test
@@ -657,7 +674,7 @@ class MessageParserTest {
             }
         """.trimIndent()
         val msg = parser.parseText(json) as ServerState
-        assertEquals(240000L, msg.controller?.seekMaxMs)
+        assertEquals(240000L, msg.controller.orNull()?.seekMaxMs)
     }
 
     @Test
@@ -673,7 +690,7 @@ class MessageParserTest {
             }
         """.trimIndent()
         val msg = parser.parseText(json) as ServerState
-        assertNull(msg.controller?.seekMaxMs)
+        assertNull(msg.controller.orNull()?.seekMaxMs)
     }
 
     @Test

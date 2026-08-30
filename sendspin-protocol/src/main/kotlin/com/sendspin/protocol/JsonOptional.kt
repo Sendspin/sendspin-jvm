@@ -28,6 +28,9 @@ sealed class JsonOptional<out T> {
 fun <T> JsonOptional<T>.orFallback(fallback: T?): T? =
     if (this is JsonOptional.Absent) fallback else (this as JsonOptional.Present).value
 
+/** Unwraps one level: the present value (which may itself be null), or null if [Absent]. */
+fun <T> JsonOptional<T>.orNull(): T? = (this as? JsonOptional.Present)?.value
+
 /**
  * Moshi adapter factory for [JsonOptional].
  *

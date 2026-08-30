@@ -82,25 +82,26 @@ data class ArtworkSupport(
     @Json(name = "channels") val channels: List<ArtworkChannel>,
 )
 
+/** [width]/[height] are the exact dimensions the server must deliver, letterboxed (spec PR #168). */
 @JsonClass(generateAdapter = true)
 data class ArtworkChannel(
     @Json(name = "source") val source: String,
     @Json(name = "format") val format: String = "jpeg",
-    @Json(name = "media_width") val mediaWidth: Int = 800,
-    @Json(name = "media_height") val mediaHeight: Int = 800,
+    @Json(name = "width") val width: Int = 800,
+    @Json(name = "height") val height: Int = 800,
 )
 
 @JsonClass(generateAdapter = true)
 data class PlayerStatePayload(
     @Json(name = "volume") val volume: Int? = null,
     @Json(name = "muted") val muted: Boolean? = null,
-    @Json(name = "static_delay_ms") val staticDelayMs: Int = 0,
+    @Json(name = "output_delay_ms") val outputDelayMs: Int = 0,
     @Json(name = "required_lead_time_ms") val requiredLeadTimeMs: Int = 0,
     @Json(name = "min_buffer_ms") val minBufferMs: Int = 0,
     // Commands this player accepts via client/state → server/command (spec PR #113/#115).
-    // Declaring "set_static_delay" is what makes the server actually push set_static_delay
+    // Declaring "set_output_delay" is what makes the server actually push set_output_delay
     // server/command messages to us; without it the server silently withholds them.
-    @Json(name = "supported_commands") val supportedCommands: List<String> = listOf("set_static_delay"),
+    @Json(name = "supported_commands") val supportedCommands: List<String> = listOf("set_output_delay"),
 )
 
 @JsonClass(generateAdapter = true)
@@ -192,11 +193,17 @@ data class ServerHello(
     @Json(name = "connection_reason") val connectionReason: String? = null,
 ) : IncomingMessage
 
+/**
+ * Each field distinguishes "key absent" ([JsonOptional.Absent] — leave that role's state
+ * unchanged) from "key present with JSON `null`" ([JsonOptional.Present] wrapping `null` —
+ * clear all of that role's state), per spec: "Omitting a role object leaves that role's state
+ * unchanged... A role object set to `null` clears all of that role's state."
+ */
 @JsonClass(generateAdapter = true)
 data class ServerState(
-    @Json(name = "metadata")   val metadata:   TrackMetadataMsg? = null,
-    @Json(name = "controller") val controller: ControllerState?  = null,
-    @Json(name = "color")      val color:      ColorState?       = null,
+    @Json(name = "metadata")   val metadata:   JsonOptional<TrackMetadataMsg> = JsonOptional.Absent,
+    @Json(name = "controller") val controller: JsonOptional<ControllerState>  = JsonOptional.Absent,
+    @Json(name = "color")      val color:      JsonOptional<ColorState>       = JsonOptional.Absent,
 ) : IncomingMessage
 
 @JsonClass(generateAdapter = true)
@@ -273,7 +280,7 @@ data class StreamArtworkConfig(
     @Json(name = "channels") val channels: List<StreamArtworkChannel>,
 )
 
-/** Artwork channel descriptor as sent by the server in stream/start (uses width/height, not media_width/media_height). */
+/** Artwork channel descriptor as sent by the server in stream/start. */
 @JsonClass(generateAdapter = true)
 data class StreamArtworkChannel(
     @Json(name = "source") val source: String,
@@ -323,7 +330,7 @@ data class ServerCommandPlayerPayload(
     @Json(name = "command") val command: String,
     @Json(name = "volume") val volume: Int? = null,
     @Json(name = "mute") val mute: Boolean? = null,
-    @Json(name = "static_delay_ms") val staticDelayMs: Int? = null,
+    @Json(name = "output_delay_ms") val outputDelayMs: Int? = null,
 )
 
 /** Server-initiated command, e.g. a per-player volume/mute/delay change. */
