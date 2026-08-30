@@ -460,10 +460,9 @@ class SendSpinClient(
         when (val msg = parser.parseText(json)) {
             is ServerHello -> handleServerHello(msg)
             is ServerState -> {
-                val metadataValue = msg.metadata.orNull()
-                val title = metadataValue?.title?.orNull()
+                val title = (msg.metadata?.title as? JsonOptional.Present)?.value
                 if (title != null) Timber.i("SendSpinClient: server/state title='%s'", title)
-                val progress = metadataValue?.progress
+                val progress = msg.metadata?.progress
                 if (progress != null) Timber.d("SendSpinClient: server/state progress=%dms speed=%d",
                     progress.trackProgress, progress.playbackSpeed)
                 when (val update = mergeControllerWithMetadata(msg)) {
@@ -471,8 +470,11 @@ class SendSpinClient(
                     ControllerUpdate.Clear -> _controllerState.value = null
                     ControllerUpdate.NoChange -> { /* role omitted or nothing changed — leave as-is */ }
                 }
-                // color is Absent (leave unchanged) / Present(null) (clear) / Present(value) (update).
-                if (msg.color is JsonOptional.Present) _colorState.value = msg.color.value
+                when {
+                    msg.color != null -> _colorState.value = msg.color
+                    "color" in msg.explicitlyNulledRoles -> _colorState.value = null
+                    else -> { /* omitted from this message — leave colorState as-is */ }
+                }
                 _serverState.tryEmit(msg)
                 if (_state.value == ClientState.CLOCK_SYNCING || _state.value == ClientState.STREAMING) {
                     _state.value = ClientState.STREAMING
@@ -638,27 +640,25 @@ class SendSpinClient(
     @Suppress("DEPRECATION")
     private fun mergeControllerWithMetadata(msg: ServerState): ControllerUpdate {
         val ctrl = msg.controller
-        if (ctrl is JsonOptional.Present && ctrl.value == null) return ControllerUpdate.Clear
-        val ctrlValue = ctrl.orNull()
-        val metadataValue = msg.metadata.orNull()
-        val rawRepeat  = metadataValue?.repeat  ?: JsonOptional.Absent
-        val rawShuffle = metadataValue?.shuffle ?: JsonOptional.Absent
+        if (ctrl == null && "controller" in msg.explicitlyNulledRoles) return ControllerUpdate.Clear
+        val rawRepeat  = msg.metadata?.repeat  ?: JsonOptional.Absent
+        val rawShuffle = msg.metadata?.shuffle ?: JsonOptional.Absent
         return when {
-            ctrlValue != null -> {
+            ctrl != null -> {
                 // Priority: controller (if Present) > metadata (if Present) > existing stored value.
                 // Absent from both sources means the server did not touch the field — preserve it.
                 val stored  = _controllerState.value
                 val repeat  = when {
-                    ctrlValue.repeat is JsonOptional.Present -> ctrlValue.repeat
-                    rawRepeat        is JsonOptional.Present -> rawRepeat
+                    ctrl.repeat is JsonOptional.Present -> ctrl.repeat
+                    rawRepeat   is JsonOptional.Present -> rawRepeat
                     else -> stored?.repeat ?: JsonOptional.Absent
                 }
                 val shuffle = when {
-                    ctrlValue.shuffle is JsonOptional.Present -> ctrlValue.shuffle
-                    rawShuffle       is JsonOptional.Present -> rawShuffle
+                    ctrl.shuffle is JsonOptional.Present -> ctrl.shuffle
+                    rawShuffle   is JsonOptional.Present -> rawShuffle
                     else -> stored?.shuffle ?: JsonOptional.Absent
                 }
-                ControllerUpdate.Set(ctrlValue.copy(repeat = repeat, shuffle = shuffle))
+                ControllerUpdate.Set(ctrl.copy(repeat = repeat, shuffle = shuffle))
             }
             rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
                 // No controller object. Old server sends repeat/shuffle only via metadata.

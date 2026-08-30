@@ -194,16 +194,19 @@ data class ServerHello(
 ) : IncomingMessage
 
 /**
- * Each field distinguishes "key absent" ([JsonOptional.Absent] — leave that role's state
- * unchanged) from "key present with JSON `null`" ([JsonOptional.Present] wrapping `null` —
- * clear all of that role's state), per spec: "Omitting a role object leaves that role's state
- * unchanged... A role object set to `null` clears all of that role's state."
+ * `metadata`/`controller`/`color` being Kotlin `null` is ambiguous on its own between "key
+ * omitted from the JSON" (leave that role's state unchanged) and "key present with JSON `null`"
+ * (clear all of that role's state) — per spec: "Omitting a role object leaves that role's state
+ * unchanged... A role object set to `null` clears all of that role's state." [explicitlyNulledRoles]
+ * resolves the ambiguity: it names which of `"metadata"`/`"controller"`/`"color"` arrived as an
+ * explicit JSON `null` on this message (parsed by [ServerStateJsonAdapter], registered via
+ * [JsonOptionalAdapterFactory] — no separate Moshi registration needed).
  */
-@JsonClass(generateAdapter = true)
 data class ServerState(
-    @Json(name = "metadata")   val metadata:   JsonOptional<TrackMetadataMsg> = JsonOptional.Absent,
-    @Json(name = "controller") val controller: JsonOptional<ControllerState>  = JsonOptional.Absent,
-    @Json(name = "color")      val color:      JsonOptional<ColorState>       = JsonOptional.Absent,
+    @Json(name = "metadata")   val metadata:   TrackMetadataMsg? = null,
+    @Json(name = "controller") val controller: ControllerState?  = null,
+    @Json(name = "color")      val color:      ColorState?       = null,
+    val explicitlyNulledRoles: Set<String> = emptySet(),
 ) : IncomingMessage
 
 @JsonClass(generateAdapter = true)
