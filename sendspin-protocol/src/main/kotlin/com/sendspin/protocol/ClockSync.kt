@@ -122,12 +122,28 @@ class ClockSync {
      */
     fun toLocalMicros(serverMicros: Long, nowMicros: Long = localMicros()): Long {
         synchronized(lock) {
-            val driftSnr = if (p11 > 0.0) abs(xDrift) / sqrt(p11) else 0.0
-            val effectiveDrift = if (driftSnr >= driftSignificanceThreshold) xDrift else 0.0
-            val elapsed = nowMicros - lastPredictTimeMicros
-            val currentOffset = xOffset + effectiveDrift * elapsed
-            return (serverMicros - currentOffset).toLong()
+            return (serverMicros - currentOffsetMicros(nowMicros)).toLong()
         }
+    }
+
+    /**
+     * Convert a local-clock timestamp (µs) to a server-clock timestamp (µs) — the inverse of
+     * [toLocalMicros]. Used to obtain "now" in the server's clock domain, e.g. for the elapsed-time
+     * calculation in [calculateProgress] (spec PR #210: progress must be computed in server-clock
+     * microseconds, since local-clock elapsed time diverges from server-clock elapsed time under drift).
+     */
+    fun toServerMicros(localMicros: Long): Long {
+        synchronized(lock) {
+            return (localMicros + currentOffsetMicros(localMicros)).toLong()
+        }
+    }
+
+    /** Offset estimate (µs) at [nowMicros], extrapolated by drift when statistically significant. Caller holds [lock]. */
+    private fun currentOffsetMicros(nowMicros: Long): Double {
+        val driftSnr = if (p11 > 0.0) abs(xDrift) / sqrt(p11) else 0.0
+        val effectiveDrift = if (driftSnr >= driftSignificanceThreshold) xDrift else 0.0
+        val elapsed = nowMicros - lastPredictTimeMicros
+        return xOffset + effectiveDrift * elapsed
     }
 
     /** Current best estimate of the clock offset in microseconds (server − local). */
@@ -225,23 +241,28 @@ class ClockSync {
 
         /**
          * Computes current track progress (ms) using the spec formula:
-         * `track_progress + (now - base_time) * playback_speed / 1_000_000`
+         * `track_progress + (now - timestamp) * playback_speed / 1_000_000`
          *
-         * @param baseProgressMs track position in ms at the snapshot time
-         * @param baseLocalTimeMicros local clock (µs) when [baseProgressMs] was valid
+         * Per spec PR #210, elapsed time MUST be computed in server-clock microseconds — converting
+         * either endpoint to local time first and diffing there is wrong under clock drift, since
+         * drift makes the two clocks' elapsed durations differ. Callers obtain [nowServerMicros] by
+         * inverting the time filter's server-to-local mapping, e.g. `clockSync.toServerMicros(ClockSync.localMicros())`.
+         *
+         * @param baseProgressMs `metadata.progress.track_progress` (ms) at [baseServerTimeMicros]
+         * @param baseServerTimeMicros `metadata.timestamp`: server-clock µs at which [baseProgressMs] was valid
          * @param playbackSpeed speed × 1000; 0 = paused
          * @param durationMs total duration in ms; 0 = unknown (live stream, no upper clamp)
-         * @param nowMicros current local clock time; defaults to [localMicros]
+         * @param nowServerMicros current time in the server's clock domain (see [toServerMicros])
          */
         fun calculateProgress(
             baseProgressMs: Long,
-            baseLocalTimeMicros: Long,
+            baseServerTimeMicros: Long,
             playbackSpeed: Int,
             durationMs: Long,
-            nowMicros: Long = localMicros(),
+            nowServerMicros: Long,
         ): Long {
             val raw = if (playbackSpeed != 0) {
-                baseProgressMs + (nowMicros - baseLocalTimeMicros) * playbackSpeed / 1_000_000L
+                baseProgressMs + (nowServerMicros - baseServerTimeMicros) * playbackSpeed / 1_000_000L
             } else {
                 baseProgressMs
             }

@@ -516,16 +516,73 @@ class MessageParserTest {
     }
 
     @Test
-    fun `parse binary artwork channel 0`() {
+    fun `parse artwork announce on channel 0`() {
         val timestamp = 9_999L
-        val imgData = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) // JPEG magic
+        val totalSize = 12_345L
+        val frame = buildArtworkAnnounce(BINARY_TYPE_ARTWORK_0, timestamp, totalSize)
 
-        val frame = buildBinaryFrame(BINARY_TYPE_ARTWORK_0.toByte(), timestamp, imgData)
-        val result = parser.parseBinary(frame) as MessageParser.BinaryArtwork
+        val result = (parser.parseBinary(frame) as MessageParser.BinaryArtwork).message as ArtworkAnnounce
 
         assertEquals(0, result.channel)
         assertEquals(timestamp, result.serverTimestampMicros)
+        assertEquals(totalSize, result.totalSize)
+    }
+
+    @Test
+    fun `parse artwork announce with total_size 0 (clear)`() {
+        val frame = buildArtworkAnnounce(BINARY_TYPE_ARTWORK_1, 100L, 0L)
+        val result = (parser.parseBinary(frame) as MessageParser.BinaryArtwork).message as ArtworkAnnounce
+        assertEquals(1, result.channel)
+        assertEquals(0L, result.totalSize)
+    }
+
+    @Test
+    fun `parse artwork part`() {
+        val imgData = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) // JPEG magic
+        val frame = ByteBuffer.allocate(2 + imgData.size).put(BINARY_TYPE_ARTWORK_2).put(0.toByte()).put(imgData).array().toByteString()
+
+        val result = (parser.parseBinary(frame) as MessageParser.BinaryArtwork).message as ArtworkPart
+
+        assertEquals(2, result.channel)
         assertTrue(imgData.contentEquals(result.data))
+    }
+
+    @Test
+    fun `parse artwork cancel`() {
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_3, ARTWORK_FLAG_CANCEL.toByte()).toByteString()
+        val result = (parser.parseBinary(frame) as MessageParser.BinaryArtwork).message as ArtworkCancel
+        assertEquals(3, result.channel)
+    }
+
+    @Test
+    fun `artwork message under 2 bytes is malformed`() {
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_0).toByteString()
+        assertTrue(parser.parseBinary(frame) is MessageParser.Malformed)
+    }
+
+    @Test
+    fun `artwork announce with wrong length is malformed`() {
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_0, ARTWORK_FLAG_ANNOUNCE.toByte(), 1, 2, 3).toByteString()
+        assertTrue(parser.parseBinary(frame) is MessageParser.Malformed)
+    }
+
+    @Test
+    fun `artwork cancel longer than 2 bytes is malformed`() {
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_0, ARTWORK_FLAG_CANCEL.toByte(), 0).toByteString()
+        assertTrue(parser.parseBinary(frame) is MessageParser.Malformed)
+    }
+
+    @Test
+    fun `artwork message with both cancel and announce flags is malformed`() {
+        val flags = (ARTWORK_FLAG_CANCEL or ARTWORK_FLAG_ANNOUNCE).toByte()
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_0, flags).toByteString()
+        assertTrue(parser.parseBinary(frame) is MessageParser.Malformed)
+    }
+
+    @Test
+    fun `artwork message with reserved flag bit set is malformed`() {
+        val frame = byteArrayOf(BINARY_TYPE_ARTWORK_0, 0x04).toByteString()
+        assertTrue(parser.parseBinary(frame) is MessageParser.Malformed)
     }
 
     @Test
@@ -728,6 +785,15 @@ class MessageParserTest {
         buf.put(type)
         buf.putLong(timestamp)
         buf.put(payload)
+        return buf.array().toByteString()
+    }
+
+    private fun buildArtworkAnnounce(type: Byte, timestamp: Long, totalSize: Long): ByteString {
+        val buf = ByteBuffer.allocate(14)
+        buf.put(type)
+        buf.put(ARTWORK_FLAG_ANNOUNCE.toByte())
+        buf.putLong(timestamp)
+        buf.putInt(totalSize.toInt())
         return buf.array().toByteString()
     }
 }
