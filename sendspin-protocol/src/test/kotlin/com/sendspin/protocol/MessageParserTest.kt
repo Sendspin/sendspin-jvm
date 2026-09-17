@@ -506,13 +506,39 @@ class MessageParserTest {
     @Test
     fun `parse binary audio chunk`() {
         val timestamp = 123_456_789_000L
+        val sendAheadMicros = 45_000L
         val audioData = byteArrayOf(0x01, 0x02, 0x03, 0x04)
 
-        val frame = buildBinaryFrame(BINARY_TYPE_AUDIO.toByte(), timestamp, audioData)
+        val frame = buildAudioBinaryFrame(timestamp, sendAheadMicros, audioData)
         val result = parser.parseBinary(frame) as MessageParser.BinaryAudio
 
         assertEquals(timestamp, result.chunk.serverTimestampMicros)
+        assertEquals(sendAheadMicros, result.chunk.sendAheadMicros)
         assertTrue(audioData.contentEquals(result.chunk.data))
+    }
+
+    @Test
+    fun `send_ahead bytes are excluded from audio chunk data`() {
+        val timestamp = 42_000_000L
+        // send_ahead encodes to bytes distinct from the audio payload so a parser that fails
+        // to consume them would leak these 4 bytes into the front of chunk.data.
+        val sendAheadMicros = 0xCAFEBABEL // top bit set — also exercises unsigned uint32 handling
+        val audioData = byteArrayOf(0x11, 0x22, 0x33)
+
+        val frame = buildAudioBinaryFrame(timestamp, sendAheadMicros, audioData)
+        val result = parser.parseBinary(frame) as MessageParser.BinaryAudio
+
+        assertEquals(sendAheadMicros, result.chunk.sendAheadMicros)
+        assertEquals(audioData.size, result.chunk.data.size)
+        assertTrue(audioData.contentEquals(result.chunk.data))
+    }
+
+    @Test
+    fun `audio frame with only header and no send_ahead bytes returns null`() {
+        // 9 bytes: type + timestamp, but missing the 4-byte send_ahead field entirely.
+        val frame = ByteArray(9) { if (it == 0) BINARY_TYPE_AUDIO else 0 }.toByteString()
+        val result = parser.parseBinary(frame)
+        assertNull(result)
     }
 
     @Test
@@ -537,7 +563,7 @@ class MessageParserTest {
 
     @Test
     fun `binary frame empty payload is valid audio chunk`() {
-        val frame = buildBinaryFrame(BINARY_TYPE_AUDIO.toByte(), 0L, ByteArray(0))
+        val frame = buildAudioBinaryFrame(0L, 0L, ByteArray(0))
         val result = parser.parseBinary(frame) as MessageParser.BinaryAudio
         assertEquals(0, result.chunk.data.size)
     }
@@ -723,10 +749,21 @@ class MessageParserTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /** Builds a non-audio binary frame (artwork/visualizer): type + timestamp + payload, no send_ahead. */
     private fun buildBinaryFrame(type: Byte, timestamp: Long, payload: ByteArray): ByteString {
         val buf = ByteBuffer.allocate(1 + 8 + payload.size)
         buf.put(type)
         buf.putLong(timestamp)
+        buf.put(payload)
+        return buf.array().toByteString()
+    }
+
+    /** Builds an audio binary frame: type + timestamp + send_ahead (uint32) + payload. */
+    private fun buildAudioBinaryFrame(timestamp: Long, sendAheadMicros: Long, payload: ByteArray): ByteString {
+        val buf = ByteBuffer.allocate(1 + 8 + 4 + payload.size)
+        buf.put(BINARY_TYPE_AUDIO)
+        buf.putLong(timestamp)
+        buf.putInt(sendAheadMicros.toInt())
         buf.put(payload)
         return buf.array().toByteString()
     }

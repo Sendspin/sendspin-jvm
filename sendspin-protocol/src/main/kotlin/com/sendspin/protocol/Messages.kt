@@ -387,6 +387,8 @@ data class AudioChunk(
     val serverTimestampMicros: Long,
     /** Raw encoded audio bytes (codec determined by the most recent [StreamStart]). */
     val data: ByteArray,
+    /** Microseconds from the server's transmission of this chunk to [serverTimestampMicros]. */
+    val sendAheadMicros: Long = 0,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

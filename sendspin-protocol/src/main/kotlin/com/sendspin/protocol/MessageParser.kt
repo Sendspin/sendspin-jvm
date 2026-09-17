@@ -12,12 +12,16 @@ import com.sendspin.protocol.ProtocolLog as Timber
  * Text frames carry JSON-encoded control/metadata messages; binary frames carry
  * time-stamped audio or artwork payloads.
  *
- * Binary audio frame layout:
+ * Binary audio frame layout (message type 0x04):
  * ```
- * [0]      1 byte  – message type (0x04 = audio, 0x08-0x0B = artwork channels 0-3)
- * [1..8]   8 bytes – big-endian int64 server timestamp in microseconds
- * [9..]    N bytes – codec-encoded audio data
+ * [0]       1 byte  – message type (0x04)
+ * [1..8]    8 bytes – big-endian int64 server timestamp in microseconds
+ * [9..12]   4 bytes – big-endian uint32 send_ahead in microseconds
+ * [13..]    N bytes – codec-encoded audio data
  * ```
+ *
+ * Other binary frame types (artwork channels 0x08-0x0B, visualizer 0x10-0x15) do not carry
+ * the send_ahead field; their payload starts immediately at byte 9.
  */
 class MessageParser(moshi: Moshi) {
 
@@ -71,10 +75,20 @@ class MessageParser(moshi: Moshi) {
         }
         val msgType = bytes[0]
         val timestamp = bytes.substring(1, 9).asByteBuffer().getLong()
-        val payload   = bytes.substring(9).toByteArray()
+
+        if (msgType == BINARY_TYPE_AUDIO) {
+            if (bytes.size < 13) {
+                Timber.w("MessageParser: audio frame too short (%d bytes)", bytes.size)
+                return null
+            }
+            val sendAheadMicros = bytes.substring(9, 13).asByteBuffer().getInt().toLong() and 0xFFFFFFFFL
+            val payload = bytes.substring(13).toByteArray()
+            return BinaryAudio(AudioChunk(timestamp, payload, sendAheadMicros))
+        }
+
+        val payload = bytes.substring(9).toByteArray()
 
         return when (msgType) {
-            BINARY_TYPE_AUDIO -> BinaryAudio(AudioChunk(timestamp, payload))
             BINARY_TYPE_ARTWORK_0 -> BinaryArtwork(0, timestamp, payload)
             BINARY_TYPE_ARTWORK_1 -> BinaryArtwork(1, timestamp, payload)
             BINARY_TYPE_ARTWORK_2 -> BinaryArtwork(2, timestamp, payload)
