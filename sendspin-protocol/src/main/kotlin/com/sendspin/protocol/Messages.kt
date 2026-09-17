@@ -22,7 +22,8 @@ data class ClientHelloPayload(
     @Json(name = "supported_roles") val supportedRoles: List<String>,
     @Json(name = "player@v1_support") val playerSupport: PlayerSupport? = null,
     @Json(name = "metadata@v1_support") val metadataSupport: MetadataSupport? = null,
-    @Json(name = "artwork@v1_support") val artworkSupport: ArtworkSupport? = null,
+    // artwork@v1_support was removed entirely (spec PR #195): channel configuration now
+    // travels only in client/state, since it can change during the connection.
     @Json(name = "controller@v1_support") val controllerSupport: ControllerSupport? = null,
     @Json(name = "color@v1_support")      val colorSupport:      ColorSupport?      = null,
     @Json(name = "visualizer@v1_support") val visualizerSupport: VisualizerSupport? = null,
@@ -38,7 +39,8 @@ data class ClientHello(
 data class PlayerSupport(
     @Json(name = "supported_formats") val supportedFormats: List<AudioFormat>,
     @Json(name = "buffer_capacity") val bufferCapacity: Int = 262144,
-    @Json(name = "supported_commands") val supportedCommands: List<String> = listOf("volume", "mute"),
+    // supported_commands moved to client/state's player object (spec PR #177): a player can now
+    // change which commands it accepts mid-session without reconnecting.
 )
 
 @JsonClass(generateAdapter = true)
@@ -61,12 +63,11 @@ class ControllerSupport
 @JsonClass(generateAdapter = false)
 class ColorSupport
 
+// types/rate_max/spectrum moved to client/state's visualizer object (spec PR #195): only
+// buffer_capacity is a constant capability that belongs in client/hello.
 @JsonClass(generateAdapter = true)
 data class VisualizerSupport(
-    @Json(name = "types") val types: List<String>,
     @Json(name = "buffer_capacity") val bufferCapacity: Int,
-    @Json(name = "rate_max") val rateMax: Int,
-    @Json(name = "spectrum") val spectrum: VisualizerSpectrumConfig? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -77,18 +78,18 @@ data class VisualizerSpectrumConfig(
     @Json(name = "f_max") val fMax: Int,
 )
 
+/**
+ * An artwork channel's configuration, shared by `client/state` and `stream/start` (spec PR #195
+ * folded the old `artwork@v1_support` hello object into `client/state`, since channel config can
+ * change mid-connection). [format]/[width]/[height] are the exact dimensions the server must
+ * deliver, letterboxed (spec PR #168) — required unless [source] is `"none"`.
+ */
 @JsonClass(generateAdapter = true)
-data class ArtworkSupport(
-    @Json(name = "channels") val channels: List<ArtworkChannel>,
-)
-
-/** [width]/[height] are the exact dimensions the server must deliver, letterboxed (spec PR #168). */
-@JsonClass(generateAdapter = true)
-data class ArtworkChannel(
+data class ArtworkChannelConfig(
     @Json(name = "source") val source: String,
-    @Json(name = "format") val format: String = "jpeg",
-    @Json(name = "width") val width: Int = 800,
-    @Json(name = "height") val height: Int = 800,
+    @Json(name = "format") val format: String? = null,
+    @Json(name = "width") val width: Int? = null,
+    @Json(name = "height") val height: Int? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -98,10 +99,26 @@ data class PlayerStatePayload(
     @Json(name = "output_delay_ms") val outputDelayMs: Int = 0,
     @Json(name = "required_lead_time_ms") val requiredLeadTimeMs: Int = 0,
     @Json(name = "min_buffer_ms") val minBufferMs: Int = 0,
-    // Commands this player accepts via client/state → server/command (spec PR #113/#115).
+    // Commands this player accepts via client/state → server/command (spec PR #113/#115, moved
+    // fully into client/state by #177 — "volume"/"mute" used to live in client/hello instead).
     // Declaring "set_output_delay" is what makes the server actually push set_output_delay
     // server/command messages to us; without it the server silently withholds them.
     @Json(name = "supported_commands") val supportedCommands: List<String> = listOf("set_output_delay"),
+    // The format the player currently prefers; MUST be one of PlayerSupport.supportedFormats.
+    // Absent means no overridden preference (spec PR #195 folded stream/request-format here).
+    @Json(name = "format") val format: AudioFormat? = null,
+)
+
+@JsonClass(generateAdapter = true)
+data class ArtworkStatePayload(
+    @Json(name = "channels") val channels: List<ArtworkChannelConfig>,
+)
+
+@JsonClass(generateAdapter = true)
+data class VisualizerStatePayload(
+    @Json(name = "types") val types: List<String>,
+    @Json(name = "rate_max") val rateMax: Int,
+    @Json(name = "spectrum") val spectrum: VisualizerSpectrumConfig? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -109,6 +126,8 @@ data class ClientStateMsgPayload(
     // Top-level `available` boolean replaced the old `state` enum (spec PR #115).
     @Json(name = "available") val available: Boolean = true,
     @Json(name = "player") val player: PlayerStatePayload? = null,
+    @Json(name = "artwork") val artwork: ArtworkStatePayload? = null,
+    @Json(name = "visualizer") val visualizer: VisualizerStatePayload? = null,
 )
 
 @JsonClass(generateAdapter = true)
@@ -139,6 +158,22 @@ data class ClientGoodbye(
     @Json(name = "payload") val payload: ClientGoodbyePayload,
 )
 
+/** Empty payload — `client/leave` carries no fields (spec PR #209). Serialises to {}. */
+@JsonClass(generateAdapter = false)
+class ClientLeavePayload
+
+/**
+ * Leaves the client's current group (spec PR #209), replacing the old `available: false`
+ * immediately followed by `available: true` "flap". The server handles it exactly as when the
+ * client becomes unavailable (solo group, playback stopped, previous group remembered for
+ * `switch`), without touching the client's actual `available` state.
+ */
+@JsonClass(generateAdapter = true)
+data class ClientLeave(
+    @Json(name = "type") val type: String = "client/leave",
+    @Json(name = "payload") val payload: ClientLeavePayload = ClientLeavePayload(),
+)
+
 @JsonClass(generateAdapter = true)
 data class ClientCommandControllerPayload(
     @Json(name = "command") val command: String,
@@ -157,26 +192,6 @@ data class ClientCommandPayload(
 data class ClientCommand(
     @Json(name = "type") val type: String = "client/command",
     @Json(name = "payload") val payload: ClientCommandPayload,
-)
-
-/** Requested player format fields; unset fields leave that aspect of the format unchanged. */
-@JsonClass(generateAdapter = true)
-data class PlayerFormatRequest(
-    @Json(name = "codec") val codec: String? = null,
-    @Json(name = "channels") val channels: Int? = null,
-    @Json(name = "sample_rate") val sampleRate: Int? = null,
-    @Json(name = "bit_depth") val bitDepth: Int? = null,
-)
-
-@JsonClass(generateAdapter = true)
-data class StreamRequestFormatPayload(
-    @Json(name = "player") val player: PlayerFormatRequest? = null,
-)
-
-@JsonClass(generateAdapter = true)
-data class StreamRequestFormat(
-    @Json(name = "type") val type: String = "stream/request-format",
-    @Json(name = "payload") val payload: StreamRequestFormatPayload,
 )
 
 // ── Incoming messages (server → client) ──────────────────────────────────────
@@ -277,16 +292,7 @@ data class StreamStart(
 
 @JsonClass(generateAdapter = true)
 data class StreamArtworkConfig(
-    @Json(name = "channels") val channels: List<StreamArtworkChannel>,
-)
-
-/** Artwork channel descriptor as sent by the server in stream/start. */
-@JsonClass(generateAdapter = true)
-data class StreamArtworkChannel(
-    @Json(name = "source") val source: String,
-    @Json(name = "format") val format: String,
-    @Json(name = "width") val width: Int,
-    @Json(name = "height") val height: Int,
+    @Json(name = "channels") val channels: List<ArtworkChannelConfig>,
 )
 
 @JsonClass(generateAdapter = true)
@@ -355,6 +361,34 @@ const val BINARY_TYPE_VISUALIZER_F_PEAK:   Byte = 0x12
 const val BINARY_TYPE_VISUALIZER_SPECTRUM: Byte = 0x13
 const val BINARY_TYPE_VISUALIZER_PEAK:     Byte = 0x14
 const val BINARY_TYPE_VISUALIZER_PITCH:    Byte = 0x15
+
+// Artwork binary flags byte (spec PR #188): bit 0 = cancel, bit 1 = announce; a part sets neither.
+const val ARTWORK_FLAG_CANCEL: Int = 0x01
+const val ARTWORK_FLAG_ANNOUNCE: Int = 0x02
+// Reserved bits 2-7 MUST be zero.
+const val ARTWORK_FLAG_RESERVED_MASK: Int = 0xFC
+
+/** An artwork message MUST NOT exceed this size, so it never needs Noise fragmentation. */
+const val ARTWORK_MAX_MESSAGE_BYTES: Int = 65519
+
+/** A single artwork binary message on one channel (spec PR #188: announce/part/cancel chunking). */
+sealed interface ArtworkBinaryMessage {
+    val channel: Int
+}
+
+/** Announces an upcoming image transfer: its display timestamp and total encoded size, no data. */
+data class ArtworkAnnounce(
+    override val channel: Int,
+    val serverTimestampMicros: Long,
+    /** Size in bytes of the encoded image; `0` announces an immediate clear. */
+    val totalSize: Long,
+) : ArtworkBinaryMessage
+
+/** The next bytes of the image announced for [channel]'s in-flight transfer. */
+data class ArtworkPart(override val channel: Int, val data: ByteArray) : ArtworkBinaryMessage
+
+/** Discards [channel]'s pending image (partly received or complete); the current image is unaffected. */
+data class ArtworkCancel(override val channel: Int) : ArtworkBinaryMessage
 
 /** A single visualizer analysis frame from the server, carrying a server-clock timestamp. */
 sealed interface VisualizerFrame {

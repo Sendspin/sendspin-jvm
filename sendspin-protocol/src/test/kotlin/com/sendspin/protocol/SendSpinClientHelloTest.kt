@@ -24,8 +24,8 @@ class SendSpinClientHelloTest {
             AudioFormat("pcm",  2, 48000, 16),
         ),
         artworkChannels = listOf(
-            ArtworkChannel("album",  "jpeg", 800, 800),
-            ArtworkChannel("artist", "jpeg", 1920, 1080),
+            ArtworkChannelConfig("album",  "jpeg", 800, 800),
+            ArtworkChannelConfig("artist", "jpeg", 1920, 1080),
         ),
     )
 
@@ -69,6 +69,17 @@ class SendSpinClientHelloTest {
     private fun parseHello(json: String): ClientHello =
         moshi.adapter(ClientHello::class.java).fromJson(json)!!
 
+    private class RecordingSocket : SendSpinWebSocket {
+        // Background coroutines (clock sync, periodic state reports) call send() concurrently
+        // with the test thread reading `sent`, so this must be a thread-safe collection.
+        val sent = java.util.concurrent.CopyOnWriteArrayList<String>()
+        override fun send(text: String): Boolean {
+            sent.add(text)
+            return true
+        }
+        override fun close(code: Int, reason: String?) {}
+    }
+
     @Test
     fun `buildClientHelloJson includes manufacturer, product_name, and software_version in device_info`() {
         val json = buildClient(
@@ -94,16 +105,48 @@ class SendSpinClientHelloTest {
     }
 
     @Test
-    fun `buildClientHelloJson advertises artwork channels from preferences`() {
-        val channels = listOf(
-            ArtworkChannel("album",  "jpeg", 800,  800),
-            ArtworkChannel("artist", "jpeg", 1920, 1080),
+    fun `buildClientHelloJson omits artwork@v1_support (spec PR #195 moved channels to client-state)`() {
+        val json = buildClient().buildClientHelloJson()
+        assertTrue(
+            "artwork@v1_support must not appear in client/hello",
+            !json.contains(""""artwork@v1_support""""),
         )
-        val json = buildClient(
-            preferences = defaultPreferences.copy(artworkChannels = channels),
-        ).buildClientHelloJson()
+    }
 
-        assertEquals(channels, parseHello(json).payload.artworkSupport!!.channels)
+    @Test
+    fun `client-state reports artwork channels from preferences when the role is active`() {
+        val channels = listOf(
+            ArtworkChannelConfig("album",  "jpeg", 800,  800),
+            ArtworkChannelConfig("artist", "jpeg", 1920, 1080),
+        )
+        val client = buildClient(preferences = defaultPreferences.copy(artworkChannels = channels))
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("artwork@v1")),
+        )
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .first { it.type == "client/state" }
+        assertEquals(channels, stateMsg.payload.artwork!!.channels)
+    }
+
+    @Test
+    fun `setArtworkChannels updates the reported configuration`() {
+        val client = buildClient()
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("artwork@v1")),
+        )
+        val updated = listOf(ArtworkChannelConfig("none"))
+
+        client.setArtworkChannels(updated)
+
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .last { it.type == "client/state" }
+        assertEquals(updated, stateMsg.payload.artwork!!.channels)
     }
 
     @Test
@@ -194,20 +237,59 @@ class SendSpinClientHelloTest {
 
     @Test
     fun `buildClientHelloJson advertises visualizer@v1 when visualizerSupport is set`() {
-        val support = VisualizerSupport(
-            types = listOf("loudness", "beat"),
-            bufferCapacity = 65536,
-            rateMax = 60,
-        )
+        // Spec PR #195: hello's visualizer@v1_support keeps only buffer_capacity; types/rate_max/
+        // spectrum moved to client/state (see `client-state reports visualizer request` below).
+        val support = VisualizerSupport(bufferCapacity = 65536)
         val json = buildClient(
             preferences = defaultPreferences.copy(visualizerSupport = support),
         ).buildClientHelloJson()
         val payload = parseHello(json).payload
         assertTrue("visualizer@v1 missing from supported_roles", payload.supportedRoles.contains("visualizer@v1"))
         assertNotNull("visualizer@v1_support missing", payload.visualizerSupport)
-        assertEquals(listOf("loudness", "beat"), payload.visualizerSupport!!.types)
-        assertEquals(65536, payload.visualizerSupport.bufferCapacity)
-        assertEquals(60, payload.visualizerSupport.rateMax)
+        assertEquals(65536, payload.visualizerSupport!!.bufferCapacity)
+    }
+
+    @Test
+    fun `client-state reports visualizer request when the role is active`() {
+        val request = VisualizerStatePayload(
+            types = listOf("loudness", "beat"),
+            rateMax = 60,
+        )
+        val client = buildClient(
+            preferences = defaultPreferences.copy(
+                visualizerSupport = VisualizerSupport(bufferCapacity = 65536),
+                visualizerRequest = request,
+            ),
+        )
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("visualizer@v1")),
+        )
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .first { it.type == "client/state" }
+        assertEquals(request, stateMsg.payload.visualizer)
+    }
+
+    @Test
+    fun `setVisualizerRequest updates the reported configuration`() {
+        val client = buildClient(
+            preferences = defaultPreferences.copy(visualizerSupport = VisualizerSupport(bufferCapacity = 65536)),
+        )
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("visualizer@v1")),
+        )
+        val updated = VisualizerStatePayload(types = listOf("spectrum"), rateMax = 15, spectrum = VisualizerSpectrumConfig(32, "log", 20, 20000))
+
+        client.setVisualizerRequest(updated)
+
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .last { it.type == "client/state" }
+        assertEquals(updated, stateMsg.payload.visualizer)
     }
 
     @Test
@@ -222,7 +304,7 @@ class SendSpinClientHelloTest {
     fun `stream-end with visualizer@v1 role clears visualizerStreamConfig`() {
         val client = buildClient(
             preferences = defaultPreferences.copy(
-                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60)
+                visualizerSupport = VisualizerSupport(65536)
             )
         )
         client.handleTextMessage(
@@ -239,7 +321,7 @@ class SendSpinClientHelloTest {
     fun `empty supportedOptionalRoles advertises no role and omits every support block`() {
         val json = buildClient(
             preferences = defaultPreferences.copy(
-                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                visualizerSupport = VisualizerSupport(65536),
                 supportedOptionalRoles = emptySet(),
             ),
         ).buildClientHelloJson()
@@ -248,7 +330,6 @@ class SendSpinClientHelloTest {
         assertEquals("no role should be advertised", emptyList<String>(), payload.supportedRoles)
         assertNull("player support should be omitted", payload.playerSupport)
         assertNull("metadata support should be omitted", payload.metadataSupport)
-        assertNull("artwork support should be omitted", payload.artworkSupport)
         assertNull("controller support should be omitted", payload.controllerSupport)
         assertNull("color support should be omitted", payload.colorSupport)
         assertNull("visualizer support should be omitted", payload.visualizerSupport)
@@ -264,7 +345,6 @@ class SendSpinClientHelloTest {
         )
         assertNotNull(payload.playerSupport)
         assertNotNull(payload.metadataSupport)
-        assertNotNull(payload.artworkSupport)
         assertNotNull(payload.controllerSupport)
         assertNotNull(payload.colorSupport)
     }
@@ -285,7 +365,6 @@ class SendSpinClientHelloTest {
         assertNotNull("metadata support should be advertised", payload.metadataSupport)
         assertNotNull("controller support should be advertised", payload.controllerSupport)
         assertNull("player support should be omitted", payload.playerSupport)
-        assertNull("artwork support should be omitted", payload.artworkSupport)
         assertNull("color support should be omitted", payload.colorSupport)
         assertNull("visualizer support should be omitted", payload.visualizerSupport)
     }
@@ -308,7 +387,7 @@ class SendSpinClientHelloTest {
     fun `visualizerSupport without VISUALIZER in supportedOptionalRoles omits the role`() {
         val json = buildClient(
             preferences = defaultPreferences.copy(
-                visualizerSupport = VisualizerSupport(listOf("loudness"), 65536, 60),
+                visualizerSupport = VisualizerSupport(65536),
                 supportedOptionalRoles = setOf(OptionalRole.METADATA),
             ),
         ).buildClientHelloJson()
@@ -355,23 +434,50 @@ class SendSpinClientHelloTest {
     }
 
     @Test
-    fun `player support advertises buffer_capacity and supported_commands from preferences`() {
+    fun `player support advertises buffer_capacity from preferences`() {
+        // supported_commands moved to client/state (spec PR #177) — see
+        // `client-state reports supported_commands from preferences` below.
         val json = buildClient(
-            preferences = defaultPreferences.copy(
-                playerBufferCapacity = 524288,
-                playerSupportedCommands = listOf("volume", "mute", "seek"),
-            ),
+            preferences = defaultPreferences.copy(playerBufferCapacity = 524288),
         ).buildClientHelloJson()
         val support = parseHello(json).payload.playerSupport!!
         assertEquals(524288, support.bufferCapacity)
-        assertEquals(listOf("volume", "mute", "seek"), support.supportedCommands)
     }
 
     @Test
-    fun `player support defaults preserve buffer_capacity and volume-mute commands`() {
+    fun `player support defaults preserve buffer_capacity`() {
         val support = parseHello(buildClient().buildClientHelloJson()).payload.playerSupport!!
         assertEquals(262144, support.bufferCapacity)
-        assertEquals(listOf("volume", "mute"), support.supportedCommands)
+    }
+
+    @Test
+    fun `client-state reports supported_commands from preferences`() {
+        val client = buildClient(
+            preferences = defaultPreferences.copy(playerSupportedCommands = listOf("volume", "mute", "seek")),
+        )
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("player@v1")),
+        )
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .first { it.type == "client/state" }
+        assertEquals(listOf("volume", "mute", "seek"), stateMsg.payload.player!!.supportedCommands)
+    }
+
+    @Test
+    fun `client-state supported_commands defaults to volume, mute, and set_output_delay`() {
+        val client = buildClient()
+        val socket = RecordingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("player@v1")),
+        )
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .first { it.type == "client/state" }
+        assertEquals(listOf("volume", "mute", "set_output_delay"), stateMsg.payload.player!!.supportedCommands)
     }
 
     @Test

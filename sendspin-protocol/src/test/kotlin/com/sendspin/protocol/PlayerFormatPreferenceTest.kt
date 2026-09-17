@@ -3,19 +3,21 @@ package com.sendspin.protocol
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class StreamRequestFormatTest {
+/**
+ * Spec PR #195 folded `stream/request-format` into `client/state`: a player reports its preferred
+ * format (which MUST be one of its advertised `supported_formats`) via [SendSpinClient.setPlayerFormatPreference]
+ * instead of sending a dedicated request message.
+ */
+class PlayerFormatPreferenceTest {
 
     private val moshi = Moshi.Builder()
         .add(JsonOptionalAdapterFactory())
         .addLast(KotlinJsonAdapterFactory())
         .build()
-
-    private val streamRequestFormatAdapter = moshi.adapter(StreamRequestFormat::class.java)
 
     private val defaultPreferences = ClientPreferences(
         supportedFormats = listOf(
@@ -39,7 +41,9 @@ class StreamRequestFormatTest {
     }
 
     private class CapturingSocket : SendSpinWebSocket {
-        val sent = mutableListOf<String>()
+        // Background coroutines (clock sync, periodic state reports) call send() concurrently
+        // with the test thread reading `sent`, so this must be a thread-safe collection.
+        val sent = java.util.concurrent.CopyOnWriteArrayList<String>()
         override fun send(text: String): Boolean {
             sent.add(text)
             return true
@@ -60,45 +64,51 @@ class StreamRequestFormatTest {
     )
 
     @Test
-    fun `serializes only the fields provided`() {
-        val json = streamRequestFormatAdapter.toJson(
-            StreamRequestFormat(
-                payload = StreamRequestFormatPayload(
-                    player = PlayerFormatRequest(codec = "pcm", bitDepth = 16)
-                )
-            )
-        )
-        assertEquals(
-            """{"type":"stream/request-format","payload":{"player":{"codec":"pcm","bit_depth":16}}}""",
-            json,
-        )
-    }
-
-    @Test
-    fun `requestPlayerFormat sends stream request-format with the requested fields`() {
+    fun `setPlayerFormatPreference reports the format in client-state`() {
         val client = buildClient()
         val socket = CapturingSocket()
         client.acceptIncomingConnection(
             socket,
             ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("player@v1")),
         )
+        socket.sent.clear()
 
-        client.requestPlayerFormat(codec = "flac", channels = 1, sampleRate = 8000, bitDepth = 16)
+        client.setPlayerFormatPreference(AudioFormat("pcm", 2, 48000, 16))
 
-        val sent = socket.sent.map { moshi.adapter(StreamRequestFormat::class.java).fromJson(it) }
-        val requestFormatMsg = sent.filterNotNull().firstOrNull { it.type == "stream/request-format" }
-        assertTrue("no stream/request-format message was sent", requestFormatMsg != null)
-        assertEquals(
-            PlayerFormatRequest(codec = "flac", channels = 1, sampleRate = 8000, bitDepth = 16),
-            requestFormatMsg!!.payload.player,
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .last { it.type == "client/state" }
+        assertTrue("client/state should carry a player object", stateMsg.payload.player != null)
+        assertTrue(
+            "client/state player.format should carry the requested format",
+            stateMsg.payload.player!!.format == AudioFormat("pcm", 2, 48000, 16),
         )
     }
 
     @Test
-    fun `requestPlayerFormat is a no-op when disconnected`() {
+    fun `setPlayerFormatPreference null clears the preference`() {
+        val client = buildClient()
+        val socket = CapturingSocket()
+        client.acceptIncomingConnection(
+            socket,
+            ServerHello(serverId = "srv-1", name = "Test Server", version = 1, activeRoles = listOf("player@v1")),
+        )
+        client.setPlayerFormatPreference(AudioFormat("pcm", 2, 48000, 16))
+        socket.sent.clear()
+
+        client.setPlayerFormatPreference(null)
+
+        val stateMsg = socket.sent
+            .mapNotNull { moshi.adapter(ClientStateMsg::class.java).fromJson(it) }
+            .last { it.type == "client/state" }
+        assertNull("format preference should be cleared", stateMsg.payload.player!!.format)
+    }
+
+    @Test
+    fun `setPlayerFormatPreference is a no-op crash-wise when disconnected`() {
         val client = buildClient()
         // No socket has been attached; sending should not throw.
-        client.requestPlayerFormat(codec = "flac")
+        client.setPlayerFormatPreference(AudioFormat("pcm", 2, 48000, 16))
         assertNull(client.serverHello.value)
     }
 }

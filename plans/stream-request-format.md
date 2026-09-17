@@ -1,5 +1,10 @@
 # Emit `stream/request-format`
 
+> **Superseded** by [spec PR #195](https://github.com/Sendspin/spec/pull/195) (see
+> `plans/spec-catchup-193-288.md` §2): `stream/request-format` was removed from the spec and
+> folded into `client/state.player.format`. `requestPlayerFormat()` below no longer exists — use
+> `SendSpinClient.setPlayerFormatPreference(format: AudioFormat?)` instead. Kept for history.
+
 ## Motivation
 
 Per the [Sendspin spec](https://github.com/Sendspin/spec) "Client → Server: stream/request-format"

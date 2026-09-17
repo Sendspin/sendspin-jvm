@@ -59,6 +59,34 @@ class ClockSyncTest {
     }
 
     @Test
+    fun `toServerMicros is the inverse of toLocalMicros`() {
+        val trueOffsetMicros = 30_000L
+        val rttMicros = 2_000L
+        repeat(15) {
+            val t1 = 500_000L + it * 50_000L
+            val t2 = t1 + trueOffsetMicros + rttMicros / 2
+            val t3 = t2 + 50L
+            val t4 = t1 + rttMicros + 50L
+            clockSync.processMeasurement(t1, t2, t3, t4)
+        }
+
+        val localNow = 9_000_000L
+        val server = clockSync.toServerMicros(localNow)
+        val roundTripped = clockSync.toLocalMicros(server, localNow)
+
+        assertTrue(
+            "toServerMicros should invert toLocalMicros: local=$localNow round-tripped=$roundTripped",
+            kotlin.math.abs(roundTripped - localNow) < 10L,
+        )
+        // server ≈ local + offset
+        val expectedServer = localNow + trueOffsetMicros
+        assertTrue(
+            "server time should be near $expectedServer but was $server",
+            kotlin.math.abs(server - expectedServer) < 3_000L,
+        )
+    }
+
+    @Test
     fun `single measurement moves offset away from zero`() {
         val initialOffset = clockSync.offsetMicros
         assertEquals(0L, initialOffset)
@@ -76,41 +104,41 @@ class ClockSyncTest {
 
     @Test
     fun `calculateProgress returns base when paused`() {
-        assertEquals(12_345L, ClockSync.calculateProgress(12_345L, 0L, 0, 60_000L, nowMicros = 999_999L))
+        assertEquals(12_345L, ClockSync.calculateProgress(12_345L, 0L, 0, 60_000L, nowServerMicros = 999_999L))
     }
 
     @Test
     fun `calculateProgress extrapolates forward at normal speed`() {
         // base=10000 ms, 5 s elapsed at 1x → 10000 + 5000 = 15000 ms
-        val result = ClockSync.calculateProgress(10_000L, 0L, 1000, 0L, nowMicros = 5_000_000L)
+        val result = ClockSync.calculateProgress(10_000L, 0L, 1000, 0L, nowServerMicros = 5_000_000L)
         assertEquals(15_000L, result)
     }
 
     @Test
     fun `calculateProgress extrapolates at 1_5x speed`() {
         // base=0 ms, 10 s elapsed at 1.5x → 0 + 15000 = 15000 ms
-        val result = ClockSync.calculateProgress(0L, 0L, 1500, 0L, nowMicros = 10_000_000L)
+        val result = ClockSync.calculateProgress(0L, 0L, 1500, 0L, nowServerMicros = 10_000_000L)
         assertEquals(15_000L, result)
     }
 
     @Test
     fun `calculateProgress clamps to track duration`() {
         // base=55000 ms, 10 s elapsed at 1x → raw=65000, clamped to 60000
-        val result = ClockSync.calculateProgress(55_000L, 0L, 1000, 60_000L, nowMicros = 10_000_000L)
+        val result = ClockSync.calculateProgress(55_000L, 0L, 1000, 60_000L, nowServerMicros = 10_000_000L)
         assertEquals(60_000L, result)
     }
 
     @Test
     fun `calculateProgress clamps to zero when result goes negative`() {
         // base=1000 ms, base time is 5 s in the future → raw = 1000 - 5000 = -4000, clamped to 0
-        val result = ClockSync.calculateProgress(1_000L, 5_000_000L, 1000, 0L, nowMicros = 0L)
+        val result = ClockSync.calculateProgress(1_000L, 5_000_000L, 1000, 0L, nowServerMicros = 0L)
         assertEquals(0L, result)
     }
 
     @Test
     fun `calculateProgress does not clamp upper bound when duration is zero`() {
         // live stream: no upper clamp regardless of large progress value
-        val result = ClockSync.calculateProgress(1_000_000L, 0L, 1000, 0L, nowMicros = 0L)
+        val result = ClockSync.calculateProgress(1_000_000L, 0L, 1000, 0L, nowServerMicros = 0L)
         assertEquals(1_000_000L, result)
     }
 

@@ -74,12 +74,21 @@ enum class OptionalRole(val roleName: String) {
  */
 data class ClientPreferences(
     val supportedFormats: List<AudioFormat>,
-    val artworkChannels: List<ArtworkChannel>,
+    /** Initial `client/state` artwork channel configuration; changeable at runtime via [SendSpinClient.setArtworkChannels]. */
+    val artworkChannels: List<ArtworkChannelConfig>,
+    /** Gates advertising `visualizer@v1`; carries only the constant `buffer_capacity` (spec PR #195 moved the rest to `client/state`). */
     val visualizerSupport: VisualizerSupport? = null,
+    /** Initial `client/state` visualizer request; changeable at runtime via [SendSpinClient.setVisualizerRequest]. Null requests no data. */
+    val visualizerRequest: VisualizerStatePayload? = null,
     /** Advertised `player@v1_support.buffer_capacity`. Defaults match [PlayerSupport]. */
     val playerBufferCapacity: Int = 262144,
-    /** Advertised `player@v1_support.supported_commands`. Defaults match [PlayerSupport]. */
-    val playerSupportedCommands: List<String> = listOf("volume", "mute"),
+    /**
+     * Initial `client/state.player.supported_commands`. Defaults match the pre-#177 split
+     * defaults (`volume`/`mute` were advertised in `client/hello`, `set_output_delay` in
+     * `client/state`); the whole list now lives here since spec PR #177 unified it into
+     * `client/state`, letting a player change which commands it accepts mid-session.
+     */
+    val playerSupportedCommands: List<String> = listOf("volume", "mute", "set_output_delay"),
     /**
      * Roles to advertise in `client/hello`. A role that is absent here is omitted from
      * `supported_roles` together with its `*_support` block.
@@ -89,7 +98,19 @@ data class ClientPreferences(
      * [OptionalRole.VISUALIZER] a non-null [visualizerSupport], to take effect.
      */
     val supportedOptionalRoles: Set<OptionalRole> = OptionalRole.entries.toSet(),
-)
+) {
+    init {
+        // Spec PR #238: servers are only required to support flac/pcm (Opus is patent-encumbered
+        // and MAY be unsupported), so a player that lists Opus alone could fail to interoperate
+        // with every server.
+        if (OptionalRole.PLAYER in supportedOptionalRoles) {
+            require(supportedFormats.any { it.codec == "flac" || it.codec == "pcm" }) {
+                "player@v1 requires at least one 'flac' or 'pcm' entry in supportedFormats " +
+                    "(opus alone is not enough: servers MUST support flac/pcm but only MAY support opus)"
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SendSpinClient(
@@ -123,7 +144,7 @@ class SendSpinClient(
     private val clientStateMsgAdapter = moshi.adapter(ClientStateMsg::class.java)
     private val clientGoodbyeAdapter  = moshi.adapter(ClientGoodbye::class.java)
     private val clientCommandAdapter  = moshi.adapter(ClientCommand::class.java)
-    private val streamRequestFormatAdapter = moshi.adapter(StreamRequestFormat::class.java)
+    private val clientLeaveAdapter    = moshi.adapter(ClientLeave::class.java)
 
     // Tracks whether the first clock measurement has been processed. Used to flush the audio
     // buffer once (after the first offset estimate is available), even if server/state already
@@ -230,6 +251,53 @@ class SendSpinClient(
     private val _artistArtwork = MutableStateFlow<ByteArray?>(null)
     val artistArtwork: StateFlow<ByteArray?> = _artistArtwork
 
+    // ── Artwork channel config (spec PR #195: moved from client/hello into client/state) ────────
+
+    @Volatile private var currentArtworkChannels: List<ArtworkChannelConfig> = preferences.artworkChannels
+    @Volatile private var currentVisualizerRequest: VisualizerStatePayload =
+        preferences.visualizerRequest ?: VisualizerStatePayload(types = emptyList(), rateMax = DEFAULT_VISUALIZER_RATE_MAX)
+    @Volatile private var playerFormatPreference: AudioFormat? = null
+
+    /** Updates the client's requested artwork channel configuration (source/format/width/height per channel), reporting it immediately if the `artwork` role is active. */
+    fun setArtworkChannels(channels: List<ArtworkChannelConfig>) {
+        currentArtworkChannels = channels
+        sendClientState()
+    }
+
+    /** Updates the client's requested visualizer data types/rate cap/spectrum config, reporting it immediately if the `visualizer` role is active. */
+    fun setVisualizerRequest(request: VisualizerStatePayload) {
+        currentVisualizerRequest = request
+        sendClientState()
+    }
+
+    /**
+     * Sets (or clears) the player's preferred stream format; MUST be one of
+     * [ClientPreferences.supportedFormats]. Replaces the removed `stream/request-format` message
+     * (spec PR #195): the preference now travels in `client/state` instead.
+     */
+    fun setPlayerFormatPreference(format: AudioFormat?) {
+        playerFormatPreference = format
+        sendClientState()
+    }
+
+    // ── Artwork chunked transfer state (spec PR #188) ────────────────────────────────────────
+
+    private class ArtworkChannelRuntime {
+        var currentImage: ByteArray? = null
+        var pendingImage: ByteArray? = null
+        var pendingTimestampMicros: Long = 0L
+        var pendingApplyJob: Job? = null
+    }
+
+    /** One in-flight transfer at most, across all 4 channels (spec: single global slot). */
+    private class ArtworkTransfer(val channel: Int, val timestampMicros: Long, totalSize: Int) {
+        val buffer = ByteArray(totalSize)
+        var received = 0
+    }
+
+    private val artworkChannelRuntime = Array(4) { ArtworkChannelRuntime() }
+    @Volatile private var activeArtworkTransfer: ArtworkTransfer? = null
+
     /** The `connection_reason` from the most recent `server/hello`; null until first hello. */
     @Volatile var lastConnectionReason: String? = null
         private set
@@ -325,30 +393,18 @@ class SendSpinClient(
     }
 
     /**
-     * Requests the server switch the player stream to a different format (e.g. to adapt to
-     * changing network or CPU conditions). Unset parameters leave that aspect of the format
-     * unchanged. The requested combination must be one advertised in [ClientPreferences.supportedFormats].
+     * Leaves the client's current group (spec PR #209), e.g. while performing an interruptible
+     * non-Sendspin activity. Replaces the old `available: false` → `available: true` "flap".
      */
-    fun requestPlayerFormat(codec: String? = null, channels: Int? = null, sampleRate: Int? = null, bitDepth: Int? = null) {
+    fun leave() {
         val socket = ws
         if (socket == null) {
-            Timber.w("SendSpinClient: cannot send stream/request-format; disconnected")
+            Timber.w("SendSpinClient: cannot send client/leave; disconnected")
             return
         }
-        val msg = StreamRequestFormat(
-            payload = StreamRequestFormatPayload(
-                player = PlayerFormatRequest(codec = codec, channels = channels, sampleRate = sampleRate, bitDepth = bitDepth)
-            )
-        )
-        val queued = socket.send(streamRequestFormatAdapter.toJson(msg))
-        if (queued) {
-            Timber.d(
-                "SendSpinClient: >> stream/request-format player codec=%s channels=%s sampleRate=%s bitDepth=%s",
-                codec, channels, sampleRate, bitDepth,
-            )
-        } else {
-            Timber.w("SendSpinClient: failed to queue stream/request-format")
-        }
+        val queued = socket.send(clientLeaveAdapter.toJson(ClientLeave()))
+        if (queued) Timber.d("SendSpinClient: >> client/leave")
+        else Timber.w("SendSpinClient: failed to queue client/leave")
     }
 
     fun disconnect(reason: String = "user_request") {
@@ -501,12 +557,22 @@ class SendSpinClient(
             }
             is StreamStart -> {
                 if (msg.player != null) _streamFormat.value = msg.player
-                if (msg.artwork != null) _streamArtwork.value = msg.artwork
+                if (msg.artwork != null) {
+                    // A channel whose configuration changed discards its pending image (spec
+                    // roles/artwork/v1.md): the server re-sends the image if it still applies.
+                    val previousChannels = _streamArtwork.value?.channels ?: emptyList()
+                    msg.artwork.channels.forEachIndexed { i, channel ->
+                        if (previousChannels.getOrNull(i) != channel) discardArtworkPending(i)
+                    }
+                    // A channel the new array no longer covers is implicitly `source: 'none'`.
+                    for (i in msg.artwork.channels.size until previousChannels.size) discardArtworkPending(i)
+                    _streamArtwork.value = msg.artwork
+                }
                 if (msg.visualizer != null) _visualizerStreamConfig.value = msg.visualizer
                 val artworkChannels = msg.artwork?.channels ?: emptyList()
                 Timber.d("SendSpinClient: stream/start artwork channels=%d", artworkChannels.size)
                 artworkChannels.forEachIndexed { i, ch ->
-                    Timber.d("SendSpinClient: stream/start artwork ch=%d source=%s %dx%d", i, ch.source, ch.width, ch.height)
+                    Timber.d("SendSpinClient: stream/start artwork ch=%d source=%s %sx%s", i, ch.source, ch.width, ch.height)
                 }
                 if (msg.player != null) {
                     Timber.i("SendSpinClient: stream/start codec=%s", msg.player.codec)
@@ -553,6 +619,13 @@ class SendSpinClient(
                 }
                 if (endArtwork) {
                     _streamArtwork.value = null
+                    // Spec: clients MUST clear the current image and discard any pending image on
+                    // stream/end for the artwork role, so the channel no longer displays artwork.
+                    for (i in artworkChannelRuntime.indices) {
+                        discardArtworkPending(i)
+                        artworkChannelRuntime[i].currentImage = null
+                    }
+                    activeArtworkTransfer = null
                     _albumArtwork.value = null
                     _artistArtwork.value = null
                 }
@@ -702,21 +775,123 @@ class SendSpinClient(
             is MessageParser.BinaryVisualizer -> {
                 onVisualizerFrame?.invoke(msg.frame)
             }
-            is MessageParser.BinaryArtwork -> {
-                val data = if (msg.data.isEmpty()) null else msg.data
-                Timber.d("SendSpinClient: artwork binary ch=%d size=%d -> %s",
-                    msg.channel, msg.data.size, if (data == null) "clear" else "set")
-                when (preferences.artworkChannels.getOrNull(msg.channel)?.source) {
-                    "album"  -> _albumArtwork.value = data
-                    "artist" -> _artistArtwork.value = data
-                    else     -> Timber.w("SendSpinClient: artwork binary unknown channel %d", msg.channel)
-                }
+            is MessageParser.BinaryArtwork -> when (val artMsg = msg.message) {
+                is ArtworkAnnounce -> handleArtworkAnnounce(artMsg)
+                is ArtworkPart     -> handleArtworkPart(artMsg)
+                is ArtworkCancel   -> handleArtworkCancel(artMsg)
+            }
+            is MessageParser.Malformed -> {
+                Timber.e("SendSpinClient: malformed binary message: %s", msg.reason)
+                closeDueToProtocolError(msg.reason)
             }
             null -> {
                 Timber.w("SendSpinClient: unparseable binary frame size=%d type=0x%02x",
                     bytes.size, if (bytes.size > 0) bytes[0].toInt() and 0xFF else -1)
             }
         }
+    }
+
+    // ── Artwork (spec PR #188: announce/part/cancel chunking) ────────────────────────────────
+
+    private fun handleArtworkAnnounce(msg: ArtworkAnnounce) {
+        if (activeArtworkTransfer != null) {
+            closeDueToProtocolError("artwork announce received while a transfer is in flight")
+            return
+        }
+        if (msg.channel !in artworkChannelRuntime.indices) {
+            closeDueToProtocolError("artwork announce for invalid channel ${msg.channel}")
+            return
+        }
+        discardArtworkPending(msg.channel)
+        when {
+            msg.totalSize == 0L -> {
+                // Empty announce (a clear) completes immediately, with no parts.
+                artworkChannelRuntime[msg.channel].pendingImage = ByteArray(0)
+                artworkChannelRuntime[msg.channel].pendingTimestampMicros = msg.serverTimestampMicros
+                scheduleArtworkApply(msg.channel)
+            }
+            msg.totalSize < 0L || msg.totalSize > Int.MAX_VALUE -> {
+                closeDueToProtocolError("artwork announce total_size out of range: ${msg.totalSize}")
+            }
+            else -> {
+                activeArtworkTransfer = ArtworkTransfer(msg.channel, msg.serverTimestampMicros, msg.totalSize.toInt())
+            }
+        }
+    }
+
+    private fun handleArtworkPart(msg: ArtworkPart) {
+        val transfer = activeArtworkTransfer
+        if (transfer == null || transfer.channel != msg.channel) {
+            closeDueToProtocolError("artwork part with no matching transfer in flight on channel ${msg.channel}")
+            return
+        }
+        if (transfer.received + msg.data.size > transfer.buffer.size) {
+            closeDueToProtocolError("artwork part data extends past total_size on channel ${msg.channel}")
+            return
+        }
+        System.arraycopy(msg.data, 0, transfer.buffer, transfer.received, msg.data.size)
+        transfer.received += msg.data.size
+        if (transfer.received >= transfer.buffer.size) {
+            activeArtworkTransfer = null
+            val runtime = artworkChannelRuntime[transfer.channel]
+            runtime.pendingApplyJob?.cancel()
+            runtime.pendingImage = transfer.buffer
+            runtime.pendingTimestampMicros = transfer.timestampMicros
+            scheduleArtworkApply(transfer.channel)
+        }
+    }
+
+    private fun handleArtworkCancel(msg: ArtworkCancel) {
+        if (msg.channel !in artworkChannelRuntime.indices) return
+        if (activeArtworkTransfer?.channel == msg.channel) activeArtworkTransfer = null
+        discardArtworkPending(msg.channel)
+    }
+
+    /** Discards channel [channel]'s pending image (partly received or complete); the current image is unaffected. */
+    private fun discardArtworkPending(channel: Int) {
+        val runtime = artworkChannelRuntime.getOrNull(channel) ?: return
+        runtime.pendingApplyJob?.cancel()
+        runtime.pendingApplyJob = null
+        runtime.pendingImage = null
+    }
+
+    /**
+     * The pending image becomes current once its timestamp, translated to the local clock via
+     * the time filter (current best estimate), has been reached; artwork is never dropped for
+     * lateness (unlike audio), so a past timestamp applies immediately instead.
+     */
+    private fun scheduleArtworkApply(channel: Int) {
+        val runtime = artworkChannelRuntime[channel]
+        val localTarget = clockSync.toLocalMicros(runtime.pendingTimestampMicros)
+        val now = ClockSync.localMicros()
+        if (localTarget <= now) {
+            applyPendingArtwork(channel)
+        } else {
+            runtime.pendingApplyJob = scope.launch {
+                delay((localTarget - now) / 1000L)
+                applyPendingArtwork(channel)
+            }
+        }
+    }
+
+    private fun applyPendingArtwork(channel: Int) {
+        val runtime = artworkChannelRuntime[channel]
+        val image = runtime.pendingImage ?: return
+        runtime.pendingImage = null
+        runtime.pendingApplyJob = null
+        val data = image.takeIf { it.isNotEmpty() }
+        runtime.currentImage = data
+        Timber.d("SendSpinClient: artwork ch=%d size=%d -> %s", channel, image.size, if (data == null) "clear" else "set")
+        when (currentArtworkChannels.getOrNull(channel)?.source) {
+            "album"  -> _albumArtwork.value = data
+            "artist" -> _artistArtwork.value = data
+            else     -> Timber.w("SendSpinClient: artwork applied for unmapped channel %d", channel)
+        }
+    }
+
+    private fun closeDueToProtocolError(reason: String) {
+        Timber.e("SendSpinClient: closing connection due to protocol error: %s", reason)
+        ws?.close(1002, reason)
     }
 
     // ── Hello ─────────────────────────────────────────────────────────────────
@@ -740,13 +915,10 @@ class SendSpinClient(
                     PlayerSupport(
                         supportedFormats = preferences.supportedFormats,
                         bufferCapacity = preferences.playerBufferCapacity,
-                        supportedCommands = preferences.playerSupportedCommands,
                     )
                 } else null,
                 metadataSupport = if (advertises(OptionalRole.METADATA)) MetadataSupport() else null,
-                artworkSupport = if (advertises(OptionalRole.ARTWORK)) {
-                    ArtworkSupport(channels = preferences.artworkChannels)
-                } else null,
+                // artwork@v1_support removed (spec PR #195): channel config now lives in client/state.
                 controllerSupport = if (advertises(OptionalRole.CONTROLLER)) ControllerSupport() else null,
                 colorSupport = if (advertises(OptionalRole.COLOR)) ColorSupport() else null,
                 visualizerSupport = preferences.visualizerSupport.takeIf { advertises(OptionalRole.VISUALIZER) },
@@ -803,8 +975,10 @@ class SendSpinClient(
         val activeRoles = _serverHello.value?.activeRoles
         // activeRoles is null before the server hello, when the volume/mute/delay setters can
         // already report state — so gate on our own advertisement too.
-        val playerActive = advertises(OptionalRole.PLAYER) &&
-            (activeRoles == null || activeRoles.any { it == "player@v1" || it == "player" })
+        fun roleActive(vararg names: String) =
+            activeRoles == null || activeRoles.any { it in names }
+
+        val playerActive = advertises(OptionalRole.PLAYER) && roleActive("player@v1", "player")
         val player = if (playerActive) {
             PlayerStatePayload(
                 volume = playerVolume,
@@ -812,11 +986,22 @@ class SendSpinClient(
                 outputDelayMs = outputDelayMs,
                 requiredLeadTimeMs = requiredLeadTimeMs,
                 minBufferMs = minBufferMs,
+                supportedCommands = preferences.playerSupportedCommands,
+                format = playerFormatPreference,
             )
         } else {
             null
         }
-        ws?.send(clientStateMsgAdapter.toJson(ClientStateMsg(payload = ClientStateMsgPayload(player = player))))
+
+        val artworkActive = advertises(OptionalRole.ARTWORK) && roleActive("artwork@v1", "artwork")
+        val artwork = if (artworkActive) ArtworkStatePayload(channels = currentArtworkChannels) else null
+
+        val visualizerActive = advertises(OptionalRole.VISUALIZER) && roleActive("visualizer@v1", "visualizer")
+        val visualizer = if (visualizerActive) currentVisualizerRequest else null
+
+        ws?.send(clientStateMsgAdapter.toJson(ClientStateMsg(
+            payload = ClientStateMsgPayload(player = player, artwork = artwork, visualizer = visualizer),
+        )))
     }
 
     private fun startPeriodicStateReports() {
@@ -883,6 +1068,11 @@ class SendSpinClient(
         _visualizerStreamConfig.value = null
         _streamFormat.value = null
         _streamArtwork.value = null
+        for (i in artworkChannelRuntime.indices) {
+            discardArtworkPending(i)
+            artworkChannelRuntime[i].currentImage = null
+        }
+        activeArtworkTransfer = null
         _albumArtwork.value = null
         _artistArtwork.value = null
         firstAudioChunkLogged = false
@@ -898,6 +1088,8 @@ class SendSpinClient(
         _groupPlaybackState.value = null
         _controllerState.value = null
         _streamFormat.value = null
+        for (i in artworkChannelRuntime.indices) discardArtworkPending(i)
+        activeArtworkTransfer = null
         audioScope.launch {
             pendingStopJob?.cancel()
             pendingStopJob = null
@@ -908,6 +1100,9 @@ class SendSpinClient(
     companion object {
         private const val RECONNECT_BASE_MS = 1_000L
         private const val RECONNECT_MAX_MS  = 30_000L
+        // rate_max is a required positive integer in client/state even when types is empty
+        // (spec roles/visualizer/v1.md); used when ClientPreferences.visualizerRequest is unset.
+        private const val DEFAULT_VISUALIZER_RATE_MAX = 30
         // Natural track-to-track transitions: aiosendspin sends stream/end then stream/start
         // for the next song. If stream/start arrives within this window, the pending stop is
         // cancelled and transition() handles the handoff gaplessly.
